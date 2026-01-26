@@ -78,7 +78,7 @@ def run_experiments(I_data, t, beta, gamma, S0, beta0, gamma0, S00):
 # Function to run experiment with alpha
 def run_experiments_alpha(I_data, t, beta, gamma, S0, beta0, gamma0, S00):
 
-    def residual(paras, I_data):
+    def residual(paras, I_data, t):
         I0 = I_data[0]
         I_int = np.array([simpson(I_data[:i + 1], t[:i + 1]) for i in range(len(t))])
         I_int2 = np.array([simpson(I_data[:i + 1] ** 2, t[:i + 1]) for i in range(len(t))])
@@ -97,7 +97,7 @@ def run_experiments_alpha(I_data, t, beta, gamma, S0, beta0, gamma0, S00):
         S0_list.append(x[2]/x[0])
 
     x0 = [beta0, gamma0, beta0*S00]
-    res = least_squares(residual, x0, args=(I_data,), callback=callback)
+    res = least_squares(residual, x0, args=(I_data, t), bounds=(0, np.inf), callback=callback)
     estimated = np.array([res.x[0], res.x[1], res.x[2]/res.x[0]])
 
     return {
