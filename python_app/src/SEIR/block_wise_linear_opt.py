@@ -1,4 +1,4 @@
-from seir_model import *
+from seir_model_double_integral import *
 import numpy as np
 from scipy.optimize import lsq_linear
 
