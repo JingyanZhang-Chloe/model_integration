@@ -27,7 +27,11 @@ module Value
 
     const p_true = [α, σ, γ]
     const u = [S0, E0, I0, R0]
+    const true_vals = [Value.α, Value.σ, Value.γ, Value.S0, Value.E0]
     const scales = [0.00001, 0.01, 0.001, 10000, 0.1]
+
+    const lb = [0.0, 0.0, 0.0, 0.0, 0.0]
+    const ub = [Inf, Inf, Inf, Inf, Inf]
 
 end
 
@@ -84,6 +88,90 @@ module Logic
         B4 = t .* I_int .- cumul_integrate(t, t .* I_data)
         B5 = t .* cumul_integrate(t, I_data.^2) .- cumul_integrate(t, t .* (I_data.^2))
         B6 = cumul_integrate(t, (I_int).^2)
+
+        return B1, B2, B3, B4, B5, B6
+    end
+
+    function cumintegrate(x, y, method=SimpsonEven())
+        n = length(x)
+        output = zeros(promote_type(eltype(x), eltype(y)), n)
+
+        if n == 1
+            error("cumintegrate requires at least 2 points")
+        end
+
+        if n == 2
+            output[2] = (x[2] - x[1]) * (y[1] + y[2]) / 2
+            return output
+        end
+
+        for i in 3:2:n
+            x1 = x[i-2]
+            x2 = x[i-1]
+            x3 = x[i]
+            y1 = y[i-2]
+            y2 = y[i-1]
+            y3 = y[i]
+
+            h1 = x2 - x1
+            h2 = x3 - x2
+            h_total = x3 - x1
+
+            # use the standard Simpson's 1/3 rule
+            # from http://www.msme.us/2017-2-1.pdf formula 6
+            output[i] = output[i-2] + (h_total / 6) * (
+                (2 - h2 / h1) * y1 +
+                (h_total^2 / (h1 * h2)) * y2 +
+                (2 - h1 / h2) * y3
+            )
+
+            # to compute output[i-1] we use the formula for scipy.integrate.cumulative_simpson
+            # https://docs.scipy.org/doc/scipy/reference/generated/scipy.integrate.cumulative_simpson.html#rb3a817c91225-2
+            # from http://www.msme.us/2017-2-1.pdf formula 8
+            output[i-1] = output[i-2] + (h1 / 6) * (
+                (3 - h1 / h_total) * y1 +
+                (3 + h1^2 / (h2 * h_total) + h1 / h_total) * y2 -
+                (h1^2 / (h2 * h_total)) * y3
+            )
+        end
+
+        if iseven(n) && n >= 3
+            # Use the last 3 points
+            x1, x2, x3 = x[n-2], x[n-1], x[n]
+            y1, y2, y3 = y[n-2], y[n-1], y[n]
+            h1, h2 = x2 - x1, x3 - x2
+            h_total = x3 - x1
+
+            # use formula 8 to compute the last point integration
+            # notice we need to do for these three points: total_simpson - first_half
+            total_simpson = (h_total / 6) * (
+                (2 - h2 / h1) * y1 +
+                (h_total^2 / (h1 * h2)) * y2 +
+                (2 - h1 / h2) * y3
+            )
+
+            first_half = (h1 / 6) * (
+                (3 - h1 / h_total) * y1 +
+                (3 + h1^2 / (h2 * h_total) + h1 / h_total) * y2 -
+                (h1^2 / (h2 * h_total)) * y3
+            )
+
+            output[n] = output[n-1] + (total_simpson - first_half)
+        end
+
+        return output
+    end
+
+    function get_blocks_simpson(I_data, t)
+        I0 = I_data[1]
+        I_int = cumintegrate(t, I_data)
+
+        B1 = 1
+        B2 = I_int
+        B3 = cumintegrate(t, I_data.^2 .- I0^2)
+        B4 = t .* I_int .- cumintegrate(t, t .* I_data)
+        B5 = t .* cumintegrate(t, I_data.^2) .- cumintegrate(t, t .* (I_data.^2))
+        B6 = cumintegrate(t, (I_int).^2)
 
         return B1, B2, B3, B4, B5, B6
     end
@@ -145,8 +233,12 @@ module Logic
         )
     end
 
-    function get_error(est::Vector, true_value::Vector)::Vector
+    function get_error(est::Vector, true_value::Vector=Value.true_vals)::Vector
         return abs.(est .- true_value) ./ true_value .* 100
+    end
+
+    function get_RSS(est::Vector, true_value::Vector)::Float64
+        return sum((est .- true_value).^2)
     end
 
     function print_results(results::NamedTuple)
@@ -212,6 +304,5 @@ module Logic
 
         return best_sol, best_err
     end
-
 
 end
