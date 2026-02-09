@@ -8,6 +8,7 @@ Date: 02/02/2026
 =#
 
 using Revise
+using Random
 include("SEIRModels.jl")
 using .Logic
 using .Value

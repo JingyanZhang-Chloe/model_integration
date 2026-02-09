@@ -180,14 +180,14 @@ module Logic
         α, σ, γ, S0, E0 = paras
         I0 = I_data[1]
 
-        C1 = σ * (E0 - I0) .* t .* B1
+        C1 = σ * (E0 + I0) .* t .* B1
         C2 = - (γ + σ) .* B2
         C3 = - 0.5 * α .* B3
         C4 = (α * σ * (S0 + E0 + I0) - σ * γ) .* B4
         C5 = - α * (γ + σ) .* B5
         C6 = - 0.5 * α * σ * γ .* B6
 
-        I_hat = C1 .+ C2 .+ C3 .+ C4 .+ C5 .+ C6
+        I_hat = I0 .+ C1 .+ C2 .+ C3 .+ C4 .+ C5 .+ C6
 
         return I_hat
     end
@@ -303,6 +303,31 @@ module Logic
         end
 
         return best_sol, best_err
+    end
+
+    function best_solution_simpson(solution_list::Vector{Vector{Float64}}, I_data::Vector, t::Vector)
+        B = get_blocks_simpson(I_data, t)
+        best_sol = Float64[]
+        best_err = Inf
+
+        for param in solution_list
+            if any(param .<= 0)
+                continue
+            end
+
+            I_hat = residual(param, I_data, B..., t)
+            err = sum((I_hat .- I_data).^2)
+            if err <= best_err
+                best_err = err
+                best_sol = param
+            end
+        end
+
+        return best_sol, best_err
+    end
+
+    function RSS_I_data(I_data::Vector{Float64}, I::Vector{Float64})
+        return sum((I_data .- I).^2)
     end
 
 end

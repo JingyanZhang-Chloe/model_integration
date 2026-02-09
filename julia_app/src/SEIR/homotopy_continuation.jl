@@ -16,22 +16,23 @@ using .Value
 @var α, σ, γ, S0, E0
 const variables = [α, σ, γ, S0, E0]
 
-function _comp_I_hat(I_data, t)
+function _comp_I_hat(I_data, t, vars)
+    α, σ, γ, S0, E0 = vars
     B1, B2, B3, B4, B5, B6 = Logic.get_blocks(I_data, t)
     I0 = I_data[1]
-    C1 = σ * (E0 - I0) .* t .* B1
+    C1 = σ * (E0 + I0) .* t .* B1
     C2 = - (γ + σ) .* B2
     C3 = - 0.5 * α .* B3
     C4 = (α * σ * (S0 + E0 + I0) - σ * γ) .* B4
     C5 = - α * (γ + σ) .* B5
     C6 = - 0.5 * α * σ * γ .* B6
-    I_hat = C1 .+ C2 .+ C3 .+ C4 .+ C5 .+ C6
+    I_hat = I0 .+ C1 .+ C2 .+ C3 .+ C4 .+ C5 .+ C6
 
     return I_hat
 end
 
 function comp_results(t::Vector, I_data::Vector, vars::Vector; save_name::String="real_solution_homotopy.jld2", save::Bool=false)
-    I_hat = _comp_I_hat(I_data, t)
+    I_hat = _comp_I_hat(I_data, t, vars)
     J = sum((I_hat .- I_data).^2)
     system_eqs = differentiate(J, vars)
     C = System(system_eqs, variables=vars)
@@ -133,9 +134,11 @@ function print_best_solution(t, noise, vars)
     results = comp_results(t, I_data, vars)
     best_result, best_err = Logic.best_solution(results, I_data, t)
     err = Logic.get_error(best_result)
+    err_I_data = Logic.RSS_I_data(I_data, I)
     println("  Variables: $best_result")
     println("  Parameter err (abs.(est .- true_value) ./ true_value .* 100) $err")
     println("  RSS (sum((I_hat .- I_data).^2)): $best_err")
+    println("  RSS (sum((I_data .- I).^2)): $err_I_data")
 end
 
 function main()

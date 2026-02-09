@@ -24,14 +24,14 @@ function _comp_I_hat(I_data::Vector, t::Vector, v_s::Vector)::Vector
     S0_eff = v_s[4] * Value.scales[4]
     E0_eff = v_s[5] * Value.scales[5]
 
-    C1 = σ_eff * (E0_eff - I0) .* t .* B1
+    C1 = σ_eff * (E0_eff + I0) .* t .* B1
     C2 = - (γ_eff + σ_eff) .* B2
     C3 = - 0.5 * α_eff .* B3
     C4 = (α_eff * σ_eff * (S0_eff + E0_eff + I0) - σ_eff * γ_eff) .* B4
     C5 = - α_eff * (γ_eff + σ_eff) .* B5
     C6 = - 0.5 * α_eff * σ_eff * γ_eff .* B6
 
-    return C1 .+ C2 .+ C3 .+ C4 .+ C5 .+ C6
+    return I0 .+ C1 .+ C2 .+ C3 .+ C4 .+ C5 .+ C6
 end
 
 function roots_check(t::Vector, I_data::Vector, vars_scaled::Vector, lb::Vector, ub::Vector, err_tol::Float64=0.01)

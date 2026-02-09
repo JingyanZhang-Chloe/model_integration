@@ -10,7 +10,7 @@ Date: 05/02/2026
 include("SEIRModels.jl")
 using .Logic
 using .Value
-using Printf
+using Printf, DifferentialEquations
 
 # 2. Simpson()
 function cumintegrate(x, y, method=SimpsonEven())
@@ -134,7 +134,7 @@ function validation_check(I_data, t)::Dict{String, Dict{String, Vector{Float64}}
 
     # 3. Numerical Integration
     prob = ODEProblem(odes!, [Value.S0, Value.E0, Value.I0, Value.R0, 0.0, 0.0, 0.0, 0.0, 0.0], (t[1], t[end]), Value.p_true)
-    sol = DifferentialEquations.solve(prob, saveat=t)
+    sol = DifferentialEquations.solve(prob, saveat=t, reltol=1e-14, abstol=1e-14)
     sol_arr = Array(sol)
     I_int_3 = sol_arr[5, :]
     I_int_sq_3 = sol_arr[6, :]
@@ -220,10 +220,65 @@ function validation_plot(I, noise_level, t)
     return final_plot
 end
 
+function validation_plot_complete(I, noise_level, t; plot_I_data=false)
+    I_data = I .+ noise_level .* I .* randn(length(I))
+    results = validation_check(I_data, t)
+
+    keys_to_check = String["I_int", "I_int_sq", "I_int_int_sq", "I_int_B4", "I_int_B5"]
+    plot_list = Plots.Plot[]
+
+    for key in keys_to_check
+        truth = results["Baseline"][key]
+        trap  = results["Trapezoidal"][key]
+        simp  = results["Simpson"][key]
+
+        # Subplot The Values
+        p_val = plot(t, truth, label="Baseline", title="Value: $key", lw=2, color=:black)
+        plot!(p_val, t, trap, label="Trapezoidal", ls=:dash, color=:red)
+        plot!(p_val, t, simp, label="Simpson", ls=:dot, color=:blue)
+
+        # Subplot The Error
+        p_err = plot(t, trap .- truth, label="Trap Error", title="Error: $key", color=:red)
+        plot!(p_err, t, simp .- truth, label="Simp Error", color=:blue)
+        hline!(p_err, [0], color=:black, alpha=0.3, label="")
+        if plot_I_data
+            plot!(p_err, t, I, label="I_data", color=:yellow)
+        end
+
+        # Subplot The Error Percentage
+        valid_idx = abs.(truth) .> 1e-6
+        p_err_percentage = plot(t[valid_idx], abs.((trap[valid_idx] .- truth[valid_idx]) ./ truth[valid_idx]),
+            label="Trap %",
+            color=:red,
+            yscale=:log10)
+
+        plot!(p_err_percentage, t[valid_idx], abs.((simp[valid_idx] .- truth[valid_idx]) ./ truth[valid_idx]),
+            label="Simp %",
+            color=:blue)
+
+        push!(plot_list, p_val, p_err, p_err_percentage)
+    end
+
+    final_plot = plot(plot_list..., layout=(length(keys_to_check), 3),
+                      size=(1000, 400 * length(keys_to_check)),
+                      plot_title="Noise Level: $(noise_level*100)%")
+
+    display(final_plot)
+    return final_plot
+end
+
 function main()
     t = collect(0.0:10.0:1000.0)
     S, E, I, R = Logic.simulate_seir(t)
     noise_levels = [0, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05]
+    noise_level = [0.001]
+    for noise in noise_level
+        the_plot = validation_plot(I, noise, t)
+        final_plot = validation_plot_complete(I, noise, t, plot_I_data=true)
+        savefig(final_plot, "sanity_check_complete.pdf")
+        savefig(the_plot, "sanity_check.pdf")
+    end
+
     for noise in noise_levels
         validation_print(I, noise, t)
     end
