@@ -271,7 +271,7 @@ function main()
     t = collect(0.0:10.0:1000.0)
     S, E, I, R = Logic.simulate_seir(t)
     noise_levels = [0, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05]
-    noise_level = [0.001]
+    noise_level = [0]
     for noise in noise_level
         the_plot = validation_plot(I, noise, t)
         final_plot = validation_plot_complete(I, noise, t, plot_I_data=true)

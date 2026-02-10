@@ -78,20 +78,6 @@ module Logic
         return S, E, I, R
     end
 
-    function get_blocks(I_data, t)
-        I0 = I_data[1]
-        I_int = cumul_integrate(t, I_data)
-
-        B1 = 1
-        B2 = I_int
-        B3 = cumul_integrate(t, I_data.^2 .- I0^2)
-        B4 = t .* I_int .- cumul_integrate(t, t .* I_data)
-        B5 = t .* cumul_integrate(t, I_data.^2) .- cumul_integrate(t, t .* (I_data.^2))
-        B6 = cumul_integrate(t, (I_int).^2)
-
-        return B1, B2, B3, B4, B5, B6
-    end
-
     function cumintegrate(x, y, method=SimpsonEven())
         n = length(x)
         output = zeros(promote_type(eltype(x), eltype(y)), n)
@@ -162,23 +148,34 @@ module Logic
         return output
     end
 
-    function get_blocks_simpson(I_data, t)
+    function get_blocks(I_data::Vector{Float64}, t::Vector{Float64}, method::String)
         I0 = I_data[1]
-        I_int = cumintegrate(t, I_data)
 
-        B1 = 1
-        B2 = I_int
-        B3 = cumintegrate(t, I_data.^2 .- I0^2)
-        B4 = t .* I_int .- cumintegrate(t, t .* I_data)
-        B5 = t .* cumintegrate(t, I_data.^2) .- cumintegrate(t, t .* (I_data.^2))
-        B6 = cumintegrate(t, (I_int).^2)
+        if method == "T"
+            I_int = cumul_integrate(t, I_data)
+            B1 = 1
+            B2 = I_int
+            B3 = cumul_integrate(t, I_data.^2 .- I0^2)
+            B4 = t .* I_int .- cumul_integrate(t, t .* I_data)
+            B5 = t .* cumul_integrate(t, I_data.^2) .- cumul_integrate(t, t .* (I_data.^2))
+            B6 = cumul_integrate(t, (I_int).^2)
+        elseif method == "S"
+            I_int = cumintegrate(t, I_data)
+            B1 = 1
+            B2 = I_int
+            B3 = cumintegrate(t, I_data.^2 .- I0^2)
+            B4 = t .* I_int .- cumintegrate(t, t .* I_data)
+            B5 = t .* cumintegrate(t, I_data.^2) .- cumintegrate(t, t .* (I_data.^2))
+            B6 = cumintegrate(t, (I_int).^2)
+        else
+            @error "method must be T or S"
+        end
 
-        return B1, B2, B3, B4, B5, B6
+        return I0, B1, B2, B3, B4, B5, B6
     end
 
-    function residual(paras, I_data, B1, B2, B3, B4, B5, B6, t)
+    function residual(paras, I0, B1, B2, B3, B4, B5, B6, t)
         α, σ, γ, S0, E0 = paras
-        I0 = I_data[1]
 
         C1 = σ * (E0 + I0) .* t .* B1
         C2 = - (γ + σ) .* B2
@@ -192,14 +189,31 @@ module Logic
         return I_hat
     end
 
-    function run_experiments(u0::Vector, I_data::Vector, t::Vector; scales=Value.scales)::NamedTuple
+    function comp_I_hat(paras_scaled, I0, B1, B2, B3, B4, B5, B6, t)
+        α_eff  = paras_scaled[1] * Value.scales[1]
+        σ_eff  = paras_scaled[2] * Value.scales[2]
+        γ_eff  = paras_scaled[3] * Value.scales[3]
+        S0_eff = paras_scaled[4] * Value.scales[4]
+        E0_eff = paras_scaled[5] * Value.scales[5]
+
+        C1 = σ_eff * (E0_eff + I0) .* t .* B1
+        C2 = - (γ_eff + σ_eff) .* B2
+        C3 = - 0.5 * α_eff .* B3
+        C4 = (α_eff * σ_eff * (S0_eff + E0_eff + I0) - σ_eff * γ_eff) .* B4
+        C5 = - α_eff * (γ_eff + σ_eff) .* B5
+        C6 = - 0.5 * α_eff * σ_eff * γ_eff .* B6
+
+        return I0 .+ C1 .+ C2 .+ C3 .+ C4 .+ C5 .+ C6
+    end
+
+    function run_experiments(u0::Vector, I_data::Vector, t::Vector, method::String; scales=Value.scales)::NamedTuple
         alpha_list = Float64[]
         sigma_list = Float64[]
         gamma_list = Float64[]
         S0_list = Float64[]
         E0_list = Float64[]
 
-        B1, B2, B3, B4, B5, B6 = get_blocks(I_data, t)
+        blocks = get_blocks(I_data, t, method)
         function model(x, p_normalized)
             p_real = p_normalized .* scales
 
@@ -209,14 +223,12 @@ module Logic
             push!(S0_list, p_real[4])
             push!(E0_list, p_real[5])
 
-            return residual(p_real, I_data, B1, B2, B3, B4, B5, B6, x)
+            return residual(p_real, blocks..., x)
         end
 
-        lb = [0.0, 0.0, 0.0, 0.0, 0.0]
-        ub = [Inf, Inf, Inf, Inf, Inf]
         u0_normalized = u0 ./ scales
 
-        fit = curve_fit(model, t, I_data, u0_normalized, lower=lb, upper=ub)
+        fit = curve_fit(model, t, I_data, u0_normalized, lower=Value.lb, upper=Value.ub)
         p_hat = fit.param .* scales
 
         return (
@@ -284,7 +296,23 @@ module Logic
         display(final_plot)
     end
 
-    function best_solution(solution_list::Vector{Vector{Float64}}, I_data::Vector, t::Vector)
+    function best_solution(solution_list::Vector{Vector{Float64}}, I_data::Vector, I0, B1, B2, B3, B4, B5, B6, t::Vector)
+        best_sol = Float64[]
+        best_err = Inf
+
+        for param in solution_list
+            I_hat = residual(param, I0, B1, B2, B3, B4, B5, B6, t)
+            err = sum((I_hat .- I_data).^2)
+            if err <= best_err
+                best_err = err
+                best_sol = param
+            end
+        end
+
+        return best_sol, best_err
+    end
+
+    function best_solution_Trap(solution_list::Vector{Vector{Float64}}, I_data::Vector, t::Vector)
         B = get_blocks(I_data, t)
         best_sol = Float64[]
         best_err = Inf
@@ -305,7 +333,7 @@ module Logic
         return best_sol, best_err
     end
 
-    function best_solution_simpson(solution_list::Vector{Vector{Float64}}, I_data::Vector, t::Vector)
+    function best_solution_Simp(solution_list::Vector{Vector{Float64}}, I_data::Vector, t::Vector)
         B = get_blocks_simpson(I_data, t)
         best_sol = Float64[]
         best_err = Inf
