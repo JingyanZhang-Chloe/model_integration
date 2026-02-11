@@ -7,6 +7,7 @@ Author: zhangjingyan
 Date: 05/02/2026
 =#
 
+using HomotopyContinuation
 include("SEIRModels.jl")
 using .Logic
 using .Value
@@ -56,7 +57,7 @@ end
 function main()
     t = collect(0.0:10.0:1000.0)
     S, E, I, R = Logic.simulate_seir(t)
-    I_data = I .+ 0.001 .* I .* randn(length(I))
+    I_data = I .+ 0 .* I .* randn(length(I))
     roots_check(t, I_data, vars_scaled, "T")
 end
 

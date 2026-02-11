@@ -12,93 +12,6 @@ using .Logic
 using .Value
 using Printf, DifferentialEquations
 
-# 2. Simpson()
-function cumintegrate(x, y, method=SimpsonEven())
-    n = length(x)
-    output = zeros(promote_type(eltype(x), eltype(y)), n)
-
-    if n == 1
-        error("cumintegrate requires at least 2 points")
-    end
-
-    if n == 2
-        output[2] = (x[2] - x[1]) * (y[1] + y[2]) / 2
-        return output
-    end
-
-    for i in 3:2:n
-        x1 = x[i-2]
-        x2 = x[i-1]
-        x3 = x[i]
-        y1 = y[i-2]
-        y2 = y[i-1]
-        y3 = y[i]
-
-        h1 = x2 - x1
-        h2 = x3 - x2
-        h_total = x3 - x1
-
-        # use the standard Simpson's 1/3 rule
-        # from http://www.msme.us/2017-2-1.pdf formula 6
-        output[i] = output[i-2] + (h_total / 6) * (
-            (2 - h2 / h1) * y1 +
-            (h_total^2 / (h1 * h2)) * y2 +
-            (2 - h1 / h2) * y3
-        )
-
-        # to compute output[i-1] we use the formula for scipy.integrate.cumulative_simpson
-        # https://docs.scipy.org/doc/scipy/reference/generated/scipy.integrate.cumulative_simpson.html#rb3a817c91225-2
-        # from http://www.msme.us/2017-2-1.pdf formula 8
-        output[i-1] = output[i-2] + (h1 / 6) * (
-            (3 - h1 / h_total) * y1 +
-            (3 + h1^2 / (h2 * h_total) + h1 / h_total) * y2 -
-            (h1^2 / (h2 * h_total)) * y3
-        )
-    end
-
-    if iseven(n) && n >= 3
-        # Use the last 3 points
-        x1, x2, x3 = x[n-2], x[n-1], x[n]
-        y1, y2, y3 = y[n-2], y[n-1], y[n]
-        h1, h2 = x2 - x1, x3 - x2
-        h_total = x3 - x1
-
-        # use formula 8 to compute the last point integration
-        # notice we need to do for these three points: total_simpson - first_half
-        total_simpson = (h_total / 6) * (
-            (2 - h2 / h1) * y1 +
-            (h_total^2 / (h1 * h2)) * y2 +
-            (2 - h1 / h2) * y3
-        )
-
-        first_half = (h1 / 6) * (
-            (3 - h1 / h_total) * y1 +
-            (3 + h1^2 / (h2 * h_total) + h1 / h_total) * y2 -
-            (h1^2 / (h2 * h_total)) * y3
-        )
-
-        output[n] = output[n-1] + (total_simpson - first_half)
-    end
-
-    return output
-end
-
-# 3. Numerical Integration (accurate baseline, no noise)
-function odes!(du, u, p, t)
-    S, E, I, R, I_int, I_int_sq, I_int_int_sq, I_int_B4, I_int_B5 = u
-    α, σ, γ = p
-    du[1] = - α * S * I
-    du[2] = α * S * I - σ * E
-    du[3] = σ * E - γ * I
-    du[4] = γ * I
-
-    du[5] = I
-    du[6] = I^2
-    du[7] = I_int^2
-    du[8] = t * I
-    du[9] = t * (I^2)
-end
-
 function validation_check(I_data, t)::Dict{String, Dict{String, Vector{Float64}}}
     results = Dict{String, Dict{String, Vector{Float64}}}()
 
@@ -120,11 +33,11 @@ function validation_check(I_data, t)::Dict{String, Dict{String, Vector{Float64}}
     results["Trapezoidal"]["I_int_B5"] = I_int_B5_1
 
     # 2. Simpson
-    I_int_2 = cumintegrate(t, I_data)
-    I_int_sq_2 = cumintegrate(t, I_data.^2)
-    I_int_int_sq_2 = cumintegrate(t, (I_int_2).^2)
-    I_int_B4_2 = cumintegrate(t, t .* I_data)
-    I_int_B5_2 = cumintegrate(t, t .* (I_data.^2))
+    I_int_2 = Logic.cumintegrate(t, I_data)
+    I_int_sq_2 = Logic.cumintegrate(t, I_data.^2)
+    I_int_int_sq_2 = Logic.cumintegrate(t, (I_int_2).^2)
+    I_int_B4_2 = Logic.cumintegrate(t, t .* I_data)
+    I_int_B5_2 = Logic.cumintegrate(t, t .* (I_data.^2))
 
     results["Simpson"]["I_int"] = I_int_2
     results["Simpson"]["I_int_sq"] = I_int_sq_2
@@ -133,8 +46,8 @@ function validation_check(I_data, t)::Dict{String, Dict{String, Vector{Float64}}
     results["Simpson"]["I_int_B5"] = I_int_B5_2
 
     # 3. Numerical Integration
-    prob = ODEProblem(odes!, [Value.S0, Value.E0, Value.I0, Value.R0, 0.0, 0.0, 0.0, 0.0, 0.0], (t[1], t[end]), Value.p_true)
-    sol = DifferentialEquations.solve(prob, saveat=t, reltol=1e-14, abstol=1e-14)
+    prob = ODEProblem(Logic.odes!, [Value.S0, Value.E0, Value.I0, Value.R0, 0.0, 0.0, 0.0, 0.0, 0.0], (t[1], t[end]), Value.p_true)
+    sol = DifferentialEquations.solve(prob, saveat=t, reltol=1e-15, abstol=1e-15)
     sol_arr = Array(sol)
     I_int_3 = sol_arr[5, :]
     I_int_sq_3 = sol_arr[6, :]
@@ -273,6 +186,7 @@ function main()
     noise_levels = [0, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05]
     noise_level = [0]
     for noise in noise_level
+        validation_print(I, noise, t)
         the_plot = validation_plot(I, noise, t)
         final_plot = validation_plot_complete(I, noise, t, plot_I_data=true)
         savefig(final_plot, "sanity_check_complete.pdf")

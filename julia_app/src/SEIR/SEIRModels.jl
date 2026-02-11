@@ -78,7 +78,7 @@ module Logic
         return S, E, I, R
     end
 
-    function cumintegrate(x, y, method=SimpsonEven())
+    function cumintegrate(x, y)
         n = length(x)
         output = zeros(promote_type(eltype(x), eltype(y)), n)
 
@@ -148,6 +148,63 @@ module Logic
         return output
     end
 
+    function cumintegrate_simpson_uniform(x::AbstractVector, y::AbstractVector)
+        n = length(x)
+        T = promote_type(eltype(x), eltype(y))
+        output = zeros(T, n)
+
+        if n == 1
+            error("cumintegrate requires at least 2 points")
+        end
+
+        if n == 2
+            output[2] = (x[2] - x[1]) * (y[1] + y[2]) / 2
+            return output
+        end
+
+        output[1] = zero(T)
+        output[2] = (x[2] - x[1]) * (y[1] + y[2]) / 2
+
+        for i in 3:2:n
+            x1 = x[i-2]
+            x2 = x[i-1]
+            x3 = x[i]
+            y1 = y[i-2]
+            y2 = y[i-1]
+            y3 = y[i]
+
+            h1 = x2 - x1
+            h2 = x3 - x2
+            h_total = x3 - x1
+
+            # use the standard Simpson's 1/3 rule
+            # from http://www.msme.us/2017-2-1.pdf formula 6
+            output[i] = output[i-2] + (h_total / 6) * (
+                (2 - h2 / h1) * y1 +
+                (h_total^2 / (h1 * h2)) * y2 +
+                (2 - h1 / h2) * y3
+            )
+
+            # to compute output[i-1] we use the formula for scipy.integrate.cumulative_simpson
+            # https://docs.scipy.org/doc/scipy/reference/generated/scipy.integrate.cumulative_simpson.html#rb3a817c91225-2
+            # from http://www.msme.us/2017-2-1.pdf formula 8
+            output[i-1] = output[i-2] + (h1 / 6) * (
+                (3 - h1 / h_total) * y1 +
+                (3 + h1^2 / (h2 * h_total) + h1 / h_total) * y2 -
+                (h1^2 / (h2 * h_total)) * y3
+            )
+        end
+
+        if iseven(n)
+            # Use the last 2 points
+            h = x[n] - x[n-1]
+            trap_step = h * (y[n-1] + y[n]) / 2
+            output[n] = output[n-1] + (trap_step)
+        end
+
+        return output
+    end
+
     function get_blocks(I_data::Vector{Float64}, t::Vector{Float64}, method::String)
         I0 = I_data[1]
 
@@ -167,11 +224,56 @@ module Logic
             B4 = t .* I_int .- cumintegrate(t, t .* I_data)
             B5 = t .* cumintegrate(t, I_data.^2) .- cumintegrate(t, t .* (I_data.^2))
             B6 = cumintegrate(t, (I_int).^2)
+        elseif method == "S_uniform"
+            I_int = cumintegrate_simpson_uniform(t, I_data)
+            B1 = 1
+            B2 = I_int
+            B3 = cumintegrate_simpson_uniform(t, I_data.^2 .- I0^2)
+            B4 = t .* I_int .- cumintegrate_simpson_uniform(t, t .* I_data)
+            B5 = t .* cumintegrate_simpson_uniform(t, I_data.^2) .- cumintegrate_simpson_uniform(t, t .* (I_data.^2))
+            B6 = cumintegrate_simpson_uniform(t, (I_int).^2)
         else
             @error "method must be T or S"
         end
 
         return I0, B1, B2, B3, B4, B5, B6
+    end
+
+    function odes!(du, u, p, t)
+        S, E, I, R, I_int, I_int_sq, I_int_int_sq, I_int_B4, I_int_B5 = u
+        α, σ, γ = p
+        du[1] = - α * S * I
+        du[2] = α * S * I - σ * E
+        du[3] = σ * E - γ * I
+        du[4] = γ * I
+
+        du[5] = I
+        du[6] = I^2
+        du[7] = I_int^2
+        du[8] = t * I
+        du[9] = t * (I^2)
+    end
+
+    function get_ideal_blocks(t::Vector{Float64})
+        prob = ODEProblem(odes!, [Value.S0, Value.E0, Value.I0, Value.R0, 0.0, 0.0, 0.0, 0.0, 0.0], (t[1], t[end]), Value.p_true)
+        sol = DifferentialEquations.solve(prob, saveat=t, reltol=1e-14, abstol=1e-14)
+        sol_arr = Array(sol)
+        I = sol_arr[3, :]
+        I0 = I[1]
+        I_int = sol_arr[5, :]
+        I_int_sq = sol_arr[6, :]
+        I_int_int_sq = sol_arr[7, :]
+        I_int_B4 = sol_arr[8, :]
+        I_int_B5 = sol_arr[9, :]
+
+        B1 = 1
+        B2 = I_int
+        B3 = (I_int_sq - (I0^2) .* t)
+        B4 = (t .* I_int .- I_int_B4)
+        B5 = (t .* I_int_sq .- I_int_B5)
+        B6 = I_int_int_sq
+
+        return I0, B1, B2, B3, B4, B5, B6, I
     end
 
     function residual(paras, I0, B1, B2, B3, B4, B5, B6, t)
@@ -184,9 +286,7 @@ module Logic
         C5 = - α * (γ + σ) .* B5
         C6 = - 0.5 * α * σ * γ .* B6
 
-        I_hat = I0 .+ C1 .+ C2 .+ C3 .+ C4 .+ C5 .+ C6
-
-        return I_hat
+        return I0 .+ C1 .+ C2 .+ C3 .+ C4 .+ C5 .+ C6
     end
 
     function comp_I_hat(paras_scaled, I0, B1, B2, B3, B4, B5, B6, t)
