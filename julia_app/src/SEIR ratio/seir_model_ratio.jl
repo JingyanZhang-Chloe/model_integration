@@ -1,41 +1,39 @@
-# seir_model.jl
+# seir_model_ratio.jl
 # Julia Script
 
 #=
 Description: 
 Author: zhangjingyan
-Date: 02/02/2026
+Date: 12/02/2026
 =#
 
-using Revise
-using Random
-include("SEIRModels.jl")
-using .Logic
-using .Value
+include("SEIRModels_ratio.jl")
+using .Logic_R
+using .Value_R
 
-"""
-function main()
-    t = collect(1.0:10.0:1000.0)
-    S, E, I, R = Logic.simulate_seir(t, plot=false)
-    I_data = I .+ 0.01 .* I .* randn(length(I))
-    u0 = [0.00003, 0.03, 0.003, 8000, 2]
-    results = Logic.run_experiments(u0, I_data, t, "T")
-    Logic.print_results(results)
+function clamp_to_bounds!(x, lb, ub; eps=1e-12)
+    for k in eachindex(x)
+        lo = lb[k]
+        hi = ub[k]
+        # if hi is Inf, skip upper clamp
+        if isfinite(hi)
+            x[k] = min(max(x[k], lo + eps), hi - eps)
+        else
+            x[k] = max(x[k], lo + eps)
+        end
+    end
+    return x
 end
-"""
 
 function main()
-
-    # Time grid
     t = collect(1.0:10.0:1000.0)
 
-    # Generate fixed I_data (important: keep ONE realization)
-    Random.seed!(1234)   # ensures reproducibility
-    S, E, I, R = Logic.simulate_seir(t, plot=false)
+    Random.seed!(1234)
+    S, E, I, R = Logic_R.simulate_seir(t)
     I_data = I .+ 0.01 .* I .* randn(length(I))
 
     # Baseline initial guess
-    u0_baseline = [0.00003, 0.03, 0.003, 8000.0, 2.0]
+    u0_baseline = [0.3, 0.03, 0.003, 0.8, 0.02]
 
     param_names = String["α", "σ", "γ", "S0", "E0"]
 
@@ -44,8 +42,8 @@ function main()
     println("Baseline run")
     println("========================================")
 
-    results_base = Logic.run_experiments(u0_baseline, I_data, t, "T")
-    Logic.print_results(results_base)
+    results_base = Logic_R.run_experiments(u0_baseline, I_data, t, "T")
+    Logic_R.print_results(results_base)
 
     println("\n========================================")
     println("One-at-a-Time Sensitivity")
@@ -58,6 +56,7 @@ function main()
 
             u0_test = copy(u0_baseline)
             u0_test[i] *= factor
+            clamp_to_bounds!(u0_test, Value_R.lb, Value_R.ub)
 
             label = "$(param_names[i])_$(factor)x"
 
@@ -65,8 +64,8 @@ function main()
             println("Running case: $label")
             println("----------------------------------------")
 
-            results = Logic.run_experiments(u0_test, I_data, t, "T")
-            Logic.print_results(results)
+            results = Logic_R.run_experiments(u0_test, I_data, t, "T")
+            Logic_R.print_results(results)
         end
     end
 end

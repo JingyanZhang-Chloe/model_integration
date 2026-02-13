@@ -153,7 +153,7 @@ function main()
     t = collect(0.0:10.0:1000.0)
     S, E, I, R = Logic.simulate_seir(t)
     I_data = I .+ 0.001 .* I .* randn(length(I))
-    comp_best_result(t, I, I_data, variables, "T")
+    comp_best_result(t, I, I_data, variables, "S")
 end
 
 main()

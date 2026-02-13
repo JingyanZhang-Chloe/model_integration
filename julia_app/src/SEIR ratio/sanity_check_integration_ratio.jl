@@ -1,16 +1,16 @@
-# sanity_check_integration.jl
+# sanity_check_integration_ratio.jl
 # Julia Script
 
 #=
 Description: 
 Author: zhangjingyan
-Date: 05/02/2026
+Date: 12/02/2026
 =#
 
-include("SEIRModels.jl")
-using .Logic
-using .Value
-using Printf, DifferentialEquations, Plots
+include("SEIRModels_ratio.jl")
+using .Logic_R
+using .Value_R
+using Printf, DifferentialEquations, Plots, NumericalIntegration
 
 function validation_check(I_data, t)::Dict{String, Dict{String, Vector{Float64}}}
     results = Dict{String, Dict{String, Vector{Float64}}}()
@@ -33,11 +33,11 @@ function validation_check(I_data, t)::Dict{String, Dict{String, Vector{Float64}}
     results["Trapezoidal"]["I_int_B5"] = I_int_B5_1
 
     # 2. Simpson
-    I_int_2 = Logic.cumintegrate(t, I_data)
-    I_int_sq_2 = Logic.cumintegrate(t, I_data.^2)
-    I_int_int_sq_2 = Logic.cumintegrate(t, (I_int_2).^2)
-    I_int_B4_2 = Logic.cumintegrate(t, t .* I_data)
-    I_int_B5_2 = Logic.cumintegrate(t, t .* (I_data.^2))
+    I_int_2 = Logic_R.cumintegrate(t, I_data)
+    I_int_sq_2 = Logic_R.cumintegrate(t, I_data.^2)
+    I_int_int_sq_2 = Logic_R.cumintegrate(t, (I_int_2).^2)
+    I_int_B4_2 = Logic_R.cumintegrate(t, t .* I_data)
+    I_int_B5_2 = Logic_R.cumintegrate(t, t .* (I_data.^2))
 
     results["Simpson"]["I_int"] = I_int_2
     results["Simpson"]["I_int_sq"] = I_int_sq_2
@@ -46,7 +46,7 @@ function validation_check(I_data, t)::Dict{String, Dict{String, Vector{Float64}}
     results["Simpson"]["I_int_B5"] = I_int_B5_2
 
     # 3. Numerical Integration
-    prob = ODEProblem(Logic.odes!, [Value.S0, Value.E0, Value.I0, Value.R0, 0.0, 0.0, 0.0, 0.0, 0.0], (t[1], t[end]), Value.p_true)
+    prob = ODEProblem(Logic_R.odes!, [Value_R.S0, Value_R.E0, Value_R.I0, Value_R.R0, 0.0, 0.0, 0.0, 0.0, 0.0], (t[1], t[end]), Value_R.p_true)
     sol = DifferentialEquations.solve(prob, saveat=t, reltol=1e-15, abstol=1e-15)
     sol_arr = Array(sol)
     I_int_3 = sol_arr[5, :]
@@ -154,14 +154,15 @@ end
 
 function main()
     t = collect(0.0:10.0:1000.0)
-    S, E, I, R = Logic.simulate_seir(t)
+    S, E, I, R = Logic_R.simulate_seir(t)
     noise_levels = [0, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05]
-    noise_level = [0]
+    noise_level = [0.001]
     for noise in noise_level
         validation_print(I, noise, t)
         final_plot = validation_plot_complete(I, noise, t, plot_I_data=true)
         savefig(final_plot, "sanity_check_complete.pdf")
     end
 end
+
 
 main()

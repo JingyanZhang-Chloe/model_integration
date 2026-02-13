@@ -4,41 +4,35 @@
 #=
 Description: 
 Author: zhangjingyan
-Date: 03/02/2026
+Date: 12/02/2026
 =#
 
-using Revise
-using DifferentialEquations
-using Plots
-using LsqFit
-using NumericalIntegration
-
-module Value
+module Value_R
 
     # True Value
-    const S0 = 9999.0
+    const S0 = 0.99
     const E0 = 0.0
-    const I0 = 1.0
+    const I0 = 0.01
     const R0 = 0.0
 
-    const α = 0.00002
+    const α = 0.2
     const σ = 0.01
     const γ = 0.005
 
     const p_true = [α, σ, γ]
     const u = [S0, E0, I0, R0]
-    const true_vals = [Value.α, Value.σ, Value.γ, Value.S0, Value.E0]
-    const scales = [0.00001, 0.01, 0.001, 10000, 0.1]
+    const true_vals = [α, σ, γ, S0, E0]
+    const scales = [0.01, 0.01, 0.01, 1.0, 1.0]
 
     const lb = [0.0, 0.0, 0.0, 0.0, 0.0]
-    const ub = [Inf, Inf, Inf, Inf, Inf]
+    const ub = [Inf, Inf, Inf, 1.0, 1.0]
 
 end
 
 
-module Logic
+module Logic_R
 
-    using ..Value
+    using ..Value_R
     using DifferentialEquations
     using Plots
     using LsqFit
@@ -53,7 +47,7 @@ module Logic
         du[4] = γ * I
     end
 
-    function simulate_seir(t; u0=Value.u, p=Value.p_true, plot=false)
+    function simulate_seir(t; u0=Value_R.u, p=Value_R.p_true, plot=false)
         prob = ODEProblem(seir!, u0, (t[1], t[end]), p)
         sol = DifferentialEquations.solve(prob, saveat=t)
         sol_arr = Array(sol)
@@ -78,9 +72,10 @@ module Logic
         return S, E, I, R
     end
 
-    function cumintegrate(x, y)
+    function cumintegrate(x::AbstractVector, y::AbstractVector)
         n = length(x)
-        output = zeros(promote_type(eltype(x), eltype(y)), n)
+        T = promote_type(eltype(x), eltype(y))
+        output = zeros(T, n)
 
         if n == 1
             error("cumintegrate requires at least 2 points")
@@ -255,8 +250,8 @@ module Logic
     end
 
     function get_ideal_blocks(t::Vector{Float64})
-        prob = ODEProblem(odes!, [Value.S0, Value.E0, Value.I0, Value.R0, 0.0, 0.0, 0.0, 0.0, 0.0], (t[1], t[end]), Value.p_true)
-        sol = DifferentialEquations.solve(prob, saveat=t, reltol=1e-14, abstol=1e-14)
+        prob = ODEProblem(odes!, [Value_R.S0, Value_R.E0, Value_R.I0, Value_R.R0, 0.0, 0.0, 0.0, 0.0, 0.0], (t[1], t[end]), Value_R.p_true)
+        sol = DifferentialEquations.solve(prob, saveat=t, reltol=1e-16, abstol=1e-16)
         sol_arr = Array(sol)
         I = sol_arr[3, :]
         I0 = I[1]
@@ -290,11 +285,11 @@ module Logic
     end
 
     function comp_I_hat(paras_scaled, I0, B1, B2, B3, B4, B5, B6, t)
-        α_eff  = paras_scaled[1] * Value.scales[1]
-        σ_eff  = paras_scaled[2] * Value.scales[2]
-        γ_eff  = paras_scaled[3] * Value.scales[3]
-        S0_eff = paras_scaled[4] * Value.scales[4]
-        E0_eff = paras_scaled[5] * Value.scales[5]
+        α_eff  = paras_scaled[1] * Value_R.scales[1]
+        σ_eff  = paras_scaled[2] * Value_R.scales[2]
+        γ_eff  = paras_scaled[3] * Value_R.scales[3]
+        S0_eff = paras_scaled[4] * Value_R.scales[4]
+        E0_eff = paras_scaled[5] * Value_R.scales[5]
 
         C1 = σ_eff * (E0_eff + I0) .* t .* B1
         C2 = - (γ_eff + σ_eff) .* B2
@@ -306,7 +301,7 @@ module Logic
         return I0 .+ C1 .+ C2 .+ C3 .+ C4 .+ C5 .+ C6
     end
 
-    function run_experiments(u0::Vector, I_data::Vector, t::Vector, method::String; scales=Value.scales)::NamedTuple
+    function run_experiments(u0::Vector, I_data::Vector, t::Vector, method::String; scales=Value_R.scales)::NamedTuple
         alpha_list = Float64[]
         sigma_list = Float64[]
         gamma_list = Float64[]
@@ -328,7 +323,7 @@ module Logic
 
         u0_normalized = u0 ./ scales
 
-        fit = curve_fit(model, t, I_data, u0_normalized, lower=Value.lb, upper=Value.ub)
+        fit = curve_fit(model, t, I_data, u0_normalized, lower=Value_R.lb, upper=Value_R.ub)
         p_hat = fit.param .* scales
 
         return (
@@ -338,14 +333,14 @@ module Logic
             S0_trace = S0_list,
             E0_trace = E0_list,
             estimated = p_hat,
-            true_params = [Value.α, Value.σ, Value.γ, Value.S0, Value.E0],
+            true_params = [Value_R.α, Value_R.σ, Value_R.γ, Value_R.S0, Value_R.E0],
             t = t,
             initial_guesses = u0,
             I_data = I_data
         )
     end
 
-    function get_error(est::Vector, true_value::Vector=Value.true_vals)::Vector
+    function get_error(est::Vector, true_value::Vector=Value_R.true_vals)::Vector
         return abs.(est .- true_value) ./ true_value .* 100
     end
 
@@ -402,48 +397,6 @@ module Logic
 
         for param in solution_list
             I_hat = residual(param, I0, B1, B2, B3, B4, B5, B6, t)
-            err = sum((I_hat .- I_data).^2)
-            if err <= best_err
-                best_err = err
-                best_sol = param
-            end
-        end
-
-        return best_sol, best_err
-    end
-
-    function best_solution_Trap(solution_list::Vector{Vector{Float64}}, I_data::Vector, t::Vector)
-        B = get_blocks(I_data, t)
-        best_sol = Float64[]
-        best_err = Inf
-
-        for param in solution_list
-            if any(param .<= 0)
-                continue
-            end
-
-            I_hat = residual(param, I_data, B..., t)
-            err = sum((I_hat .- I_data).^2)
-            if err <= best_err
-                best_err = err
-                best_sol = param
-            end
-        end
-
-        return best_sol, best_err
-    end
-
-    function best_solution_Simp(solution_list::Vector{Vector{Float64}}, I_data::Vector, t::Vector)
-        B = get_blocks_simpson(I_data, t)
-        best_sol = Float64[]
-        best_err = Inf
-
-        for param in solution_list
-            if any(param .<= 0)
-                continue
-            end
-
-            I_hat = residual(param, I_data, B..., t)
             err = sum((I_hat .- I_data).^2)
             if err <= best_err
                 best_err = err
