@@ -411,4 +411,36 @@ module Logic_R
         return sum((I_data .- I).^2)
     end
 
+    function project_to_bounds(result::Vector{Float64}, lb::Vector{Float64}, ub::Vector{Float64})::Vector{Float64}
+        """
+        Here bounds we are applying is
+        all(lb_scaled .<= res .<= ub_scaled) && (res[2] > res[3]) && (res[4] + res[5] <= 1)
+        """
+        x = clamp.(result, lb, ub)
+
+        if x[2] < x[3]
+            # since non-identifiability we switch gamma and sigma
+            x[2], x[3] = x[3], x[2]
+        end
+
+        if lb[4] + lb[5] > 1
+            @warn "Infeasible bounds: lb[4] + lb[5] > 1, cannot satisfy S0 + E0 <= 1"
+            return x
+        end
+
+        if x[4] + x[5] > 1
+            # Reduce res[5], but make sure it is above the lower bound
+            x[5] = max(1 - x[4], lb[5])
+
+            if x[4] + x[5] > 1
+                # If after lowering res[5] we are still out of bounds, lets reduce res[4]
+                x[4] = max(1 - x[5], lb[4])
+            end
+        end
+
+        x = clamp.(x, lb, ub)
+
+        return x
+    end
+
 end

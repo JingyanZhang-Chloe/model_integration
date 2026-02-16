@@ -458,4 +458,21 @@ module Logic
         return sum((I_data .- I).^2)
     end
 
+    function project_to_bounds(result::Vector{Float64}, lb::Vector{Float64}, ub::Vector{Float64})::Vector{Float64}
+        """
+        Here bounds we are applying is
+        all(lb_scaled .<= res .<= ub_scaled) && (res[2] > res[3])
+        """
+        x = clamp.(result, lb, ub)
+
+        if x[2] < x[3]
+            # since non-identifiability we switch gamma and sigma
+            x[2], x[3] = x[3], x[2]
+        end
+
+        x = clamp.(x, lb, ub)
+
+        return x
+    end
+
 end

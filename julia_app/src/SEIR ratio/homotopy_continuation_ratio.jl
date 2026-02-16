@@ -62,8 +62,12 @@ function comp_best_result(t_scaled::Vector, T::Float64, I::Vector, I_data::Vecto
     end
 
     if isempty(filtered_results_scaled)
-        @error "No physical solutions found by HC. The best solution is selected based on all real solutions"
-        filtered_results_scaled = real_results_scaled
+        @error "No physical solutions found by HC. We project all real results to bounded results instead"
+        filtered_results_scaled = Vector{Float64}[]
+        for result in real_results_scaled
+            bound_result = Logic_R.project_to_bounds(result, lb_scaled, ub_scaled)
+            push!(filtered_results_scaled, bound_result)
+        end
     end
 
     best_result_scaled, best_err = Logic_R.best_solution(filtered_results_scaled, I_data, B..., t_scaled)
@@ -80,11 +84,14 @@ end
 
 function main()
     t = collect(0.0:10.0:1000.0)
-    T = 1000.0
+    T = 100.0
     t_scaled = t ./ T
     S, E, I, R = simulate_seir(t_scaled, T, plot=false)
-    I_data = I .+ 0.000001 .* I .* randn(length(I))
+    noise = 0.05
+    I_data = I .+ noise .* I .* randn(length(I))
 
+    println("noise level $noise")
+    comp_best_result(t_scaled, T, I, I_data, variables, "T")
     comp_best_result(t_scaled, T, I, I_data, variables, "S")
 end
 

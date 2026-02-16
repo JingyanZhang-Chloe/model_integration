@@ -25,27 +25,6 @@ using .Value_R
 @var α, σ, γ, S0, E0
 const variables = [α, σ, γ, S0, E0]
 
-function project_to_bounds(result::Vector{Float64}, lb::Vector{Float64}, ub::Vector{Float64})
-    x = copy(result)
-    for i in eachindex(x)
-        x[i] = max(x[i], lb[i])
-        x[i] = min(x[i], ub[i])
-    end
-
-    if x[4] + x[5] > 1
-        # Reduce res[5], but make sure it is above the lower bound
-        x[5] = max(1 - x[4], lb[5])
-
-        if x[4] + x[5] > 1
-            # If after lowering res[5] we are still out of bounds, lets reduce res[4]
-            x[4] = max(1 - x[5], lb[4])
-        end
-    end
-
-    return x
-end
-
-
 function comp_best_result(t::Vector, I::Vector, I_data::Vector, vars::Vector, method::String)
     B = Logic_R.get_blocks(I_data, t, method)
     I_hat = Logic_R.residual(vars, B..., t)
@@ -86,7 +65,7 @@ function comp_best_result(t::Vector, I::Vector, I_data::Vector, vars::Vector, me
         println("Found physical solutions with soft filter. Mapping back to bounds")
         filtered_results_bounds = []
         for r in filtered_results
-            append!(filtered_results_bounds, project_to_bounds(r, lb, ub))
+            append!(filtered_results_bounds, Logic_R.project_to_bounds(r, lb, ub))
         end
         filtered_results = filtered_results_bounds
     end

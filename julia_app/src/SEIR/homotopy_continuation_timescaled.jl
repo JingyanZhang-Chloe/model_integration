@@ -43,7 +43,6 @@ end
 
 to_physical(res_scaled, T::Float64) = [res_scaled[1] / T, res_scaled[2] / T, res_scaled[3] / T, res_scaled[4], res_scaled[5]]
 
-
 function comp_best_result(t_scaled::Vector, T::Float64, I::Vector, I_data::Vector, vars::Vector, method::String)
     B = Logic.get_blocks(I_data, t_scaled, method)
     I_hat = Logic.residual(vars, B..., t_scaled)
@@ -57,12 +56,16 @@ function comp_best_result(t_scaled::Vector, T::Float64, I::Vector, I_data::Vecto
     ub_scaled = [Inf, Inf, Inf, Value.ub[4], Value.ub[5]]
 
     filtered_results_scaled = filter(real_results_scaled) do res
-        all(lb_scaled .<= res .<= ub_scaled) && (res[2] > res[3]) && (res[4] + res[5] <= 1)
+        all(lb_scaled .<= res .<= ub_scaled) && (res[2] > res[3])
     end
 
     if isempty(filtered_results_scaled)
-        @error "No physical solutions found by HC. The best solution is selected based on all real solutions"
-        filtered_results_scaled = real_results_scaled
+        @error "No physical solutions found by HC. We project all real results to bounded results instead"
+        filtered_results_scaled = Vector{Float64}[]
+        for result in real_results_scaled
+            bound_result = Logic.project_to_bounds(result, lb_scaled, ub_scaled)
+            push!(filtered_results_scaled, bound_result)
+        end
     end
 
     best_result_scaled, best_err = Logic.best_solution(filtered_results_scaled, I_data, B..., t_scaled)
@@ -79,10 +82,10 @@ end
 
 function main()
     t = collect(0.0:10.0:1000.0)
-    T = 1000.0
+    T = 100.0
     t_scaled = t ./ T
     S, E, I, R = simulate_seir(t_scaled, T, plot=false)
-    I_data = I .+ 0.000001 .* I .* randn(length(I))
+    I_data = I .+ 0.0001 .* I .* randn(length(I))
 
     comp_best_result(t_scaled, T, I, I_data, variables, "T")
 end

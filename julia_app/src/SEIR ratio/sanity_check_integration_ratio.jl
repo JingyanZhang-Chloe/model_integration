@@ -158,9 +158,12 @@ function main()
     noise_levels = [0, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05]
     noise_level = [0.001]
     for noise in noise_level
-        validation_print(I, noise, t)
         final_plot = validation_plot_complete(I, noise, t, plot_I_data=true)
         savefig(final_plot, "sanity_check_complete.pdf")
+    end
+
+    for noise in noise_levels
+        validation_print(I, noise, t)
     end
 end
 
