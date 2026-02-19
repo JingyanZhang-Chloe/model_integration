@@ -7,7 +7,7 @@ Author: zhangjingyan
 Date: 12/02/2026
 =#
 
-using HomotopyContinuation, DynamicPolynomials, Random, Plots, DifferentialEquations
+using HomotopyContinuation, DynamicPolynomials, Random, Plots, DifferentialEquations, LsqFit
 
 include("SEIRModels_ratio.jl")
 using .Logic_R
@@ -45,7 +45,7 @@ function simulate_seir(t_scaled, T::Float64; u0=Value_R.u, p=Value_R.p_true, plo
 to_physical(res_scaled, T::Float64) = [res_scaled[1] / T, res_scaled[2] / T, res_scaled[3] / T, res_scaled[4], res_scaled[5]]
 to_scaled(res, T::Float64) = [res[1] * T, res[2] * T, res[3] * T, res[4], res[5]]
 
-function comp_best_result(t_scaled::Vector, T::Float64, I::Vector, I_data::Vector, vars::Vector, method::String)
+function _comp_best_result(t_scaled::Vector, T::Float64, I::Vector, I_data::Vector, vars::Vector, method::String)
     B = Logic_R.get_blocks(I_data, t_scaled, method)
     I_hat = Logic_R.residual(vars, B..., t_scaled)
     J = sum((I_hat .- I_data).^2)
@@ -57,17 +57,28 @@ function comp_best_result(t_scaled::Vector, T::Float64, I::Vector, I_data::Vecto
     lb_scaled = [Value_R.lb[1]*T, Value_R.lb[2]*T, Value_R.lb[3]*T, Value_R.lb[4], Value_R.lb[5]]
     ub_scaled = [Inf, Inf, Inf, Value_R.ub[4], Value_R.ub[5]]
 
+    ls = false
+
     filtered_results_scaled = filter(real_results_scaled) do res
         all(lb_scaled .<= res .<= ub_scaled) && (res[2] > res[3]) && (res[4] + res[5] <= 1)
     end
 
     if isempty(filtered_results_scaled)
         @error "No physical solutions found by HC. We project all real results to bounded results instead"
+        ls = true
         filtered_results_scaled = Vector{Float64}[]
         for result in real_results_scaled
-            bound_result = Logic_R.project_to_bounds(result, lb_scaled, ub_scaled)
+            bound_result = Logic_R.project_to_bounds(result, lb_scaled, ub_scaled, B[1])
             push!(filtered_results_scaled, bound_result)
         end
+    end
+
+    try_filter = filter(filtered_results_scaled) do res
+        (res[4] > res[5]) && (res[1] != 0) && (res[2] != 0) && (res[3] != 0)
+    end
+
+    if !isempty(try_filter)
+        filtered_results_scaled = try_filter
     end
 
     best_result_scaled, best_err = Logic_R.best_solution(filtered_results_scaled, I_data, B..., t_scaled)
@@ -80,6 +91,89 @@ function comp_best_result(t_scaled::Vector, T::Float64, I::Vector, I_data::Vecto
     println("  Parameter err (abs.(est .- true_value) ./ true_value .* 100) $err")
     println("  RSS (sum((I_hat .- I_data).^2)): $best_err")
     println("  RSS (sum((I_data .- I).^2)): $err_I_data")
+
+    if ls
+        println(" ====== Performing LS ======")
+        u0 = best_result_scaled
+
+        function model(x, p)
+            return Logic_R.residual(p, B..., x)
+        end
+
+        fit = curve_fit(model, t_scaled, I_data, u0, lower=lb_scaled, upper=ub_scaled)
+        estimated = to_physical(fit.param, T)
+
+        err_list = Logic_R.get_error(estimated)
+        cost = sum((Value_R.true_vals .- estimated).^2)
+        I_fit = Logic_R.residual(fit.param, B..., t_scaled)
+        rss = sum((I_fit .- I_data).^2)
+
+        println("  Variables after LS: $estimated")
+        println("  Parameter err (abs.(est .- true_value) ./ true_value .* 100) $err_list")
+        println("  Cost: $cost")
+        println("  RSS (sum((I_hat .- I_data).^2)): $rss")
+    end
+end
+
+function comp_best_result(t_scaled::Vector, T::Float64, I::Vector, I_data::Vector, vars::Vector, method::String)
+    B = Logic_R.get_blocks(I_data, t_scaled, method)
+    I_hat = Logic_R.residual(vars, B..., t_scaled)
+    J = sum((I_hat .- I_data).^2)
+    system_eqs = differentiate(J, vars)
+    C = System(system_eqs, variables=vars)
+    result = HomotopyContinuation.solve(C)
+    real_results_scaled = real_solutions(result)
+
+    lb_scaled = [Value_R.lb[1]*T, Value_R.lb[2]*T, Value_R.lb[3]*T, Value_R.lb[4], Value_R.lb[5]]
+    ub_scaled = [Inf, Inf, Inf, Value_R.ub[4], Value_R.ub[5]]
+
+    filtered_results_scaled = Vector{Float64}[]
+    for result in real_results_scaled
+        bound_result = Logic_R.project_to_bounds(result, lb_scaled, ub_scaled, B[1])
+        push!(filtered_results_scaled, bound_result)
+    end
+
+    #=
+    try_filter = filter(filtered_results_scaled) do res
+        (res[4] > res[5]) && (res[1] != 0) && (res[2] != 0) && (res[3] != 0)
+    end
+
+    if !isempty(try_filter)
+        filtered_results_scaled = try_filter
+    end
+    =#
+
+    best_result_scaled, best_err = Logic_R.best_solution(filtered_results_scaled, I_data, B..., t_scaled)
+    best_result = to_physical(best_result_scaled, T)
+    err = Logic_R.get_error(best_result)
+    err_I_data = Logic_R.RSS_I_data(I_data, I)
+
+    println("  Method: $method")
+    println("  Variables: $best_result")
+    println("  Parameter err (abs.(est .- true_value) ./ true_value .* 100) $err")
+    println("  RSS (sum((I_hat .- I_data).^2)): $best_err")
+    println("  RSS (sum((I_data .- I).^2)): $err_I_data")
+
+    println()
+    println(" ====== Performing LS ======")
+    u0 = best_result_scaled
+
+    function model(x, p)
+        return Logic_R.residual(p, B..., x)
+    end
+
+    fit = curve_fit(model, t_scaled, I_data, u0, lower=lb_scaled, upper=ub_scaled)
+    estimated = to_physical(fit.param, T)
+
+    err_list = Logic_R.get_error(estimated)
+    cost = sum((Value_R.true_vals .- estimated).^2)
+    I_fit = Logic_R.residual(fit.param, B..., t_scaled)
+    rss = sum((I_fit .- I_data).^2)
+
+    println("  Variables after LS: $estimated")
+    println("  Parameter err (abs.(est .- true_value) ./ true_value .* 100) $err_list")
+    println("  Cost: $cost")
+    println("  RSS (sum((I_hat .- I_data).^2)): $rss")
 end
 
 function main()
@@ -87,7 +181,7 @@ function main()
     T = 100.0
     t_scaled = t ./ T
     S, E, I, R = simulate_seir(t_scaled, T, plot=false)
-    noise = 0.05
+    noise = 0.01
     I_data = I .+ noise .* I .* randn(length(I))
 
     println("noise level $noise")

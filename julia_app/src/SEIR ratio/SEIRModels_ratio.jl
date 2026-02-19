@@ -24,9 +24,10 @@ module Value_R
     const true_vals = [α, σ, γ, S0, E0]
     const scales = [0.01, 0.01, 0.01, 1.0, 1.0]
 
-    const lb = [0.0, 0.0, 0.0, 0.0, 0.0]
+    const lb = [0.0, 0.0, 0.0, 0.8, 0.0] # Forcing S0 to be greater than 0.8
     const ub = [Inf, Inf, Inf, 1.0, 1.0]
 
+    const T = 100.0
 end
 
 
@@ -37,6 +38,7 @@ module Logic_R
     using Plots
     using LsqFit
     using NumericalIntegration
+    using Statistics
 
     function seir!(du, u, p, t)
         S, E, I, R = u
@@ -301,7 +303,7 @@ module Logic_R
         return I0 .+ C1 .+ C2 .+ C3 .+ C4 .+ C5 .+ C6
     end
 
-    function run_experiments(u0::Vector, I_data::Vector, t::Vector, method::String; scales=Value_R.scales)::NamedTuple
+    function run_experiments(u0::Vector, I_data::Vector, t::Vector, method::String; I::Union{Nothing, Vector{Float64}}=nothing, scales=Value_R.scales)::NamedTuple
         alpha_list = Float64[]
         sigma_list = Float64[]
         gamma_list = Float64[]
@@ -323,7 +325,7 @@ module Logic_R
 
         u0_normalized = u0 ./ scales
 
-        fit = curve_fit(model, t, I_data, u0_normalized, lower=Value_R.lb, upper=Value_R.ub)
+        fit = curve_fit(model, t, I_data, u0_normalized, lower=Value_R.lb ./ scales, upper=Value_R.ub ./ scales)
         p_hat = fit.param .* scales
 
         return (
@@ -336,8 +338,124 @@ module Logic_R
             true_params = [Value_R.α, Value_R.σ, Value_R.γ, Value_R.S0, Value_R.E0],
             t = t,
             initial_guesses = u0,
-            I_data = I_data
+            I_data = I_data,
+            I = I,
+            blocks = blocks
         )
+    end
+
+    function run_experiments_k_points(
+        u0::Vector{Float64},
+        k_points::Vector{Int},
+        noise::Float64,
+        I_true::Vector{Float64},
+        t::Vector{Float64};
+        scales = Value_R.scales,
+        num_of_iters::Int = 20
+    )
+        """
+        u0: initial guesses
+        k_points: list of k where k means first k points
+        """
+        params  = String["alpha", "sigma", "gamma", "S0", "E0"]
+        methods = ["T", "S"]
+
+        # Store samples: re[k][method]["p_hat"] = Vector{Vector{Float64}}
+        #                re[k][method]["rss"]   = Vector{Float64}
+        #                re[k][method]["err"]   = Vector{Vector{Float64}}
+        # Notice that we store results from every iteration
+        re = Dict{Int, Dict{String, Dict{String, Any}}}()
+        for k in k_points
+            re[k] = Dict{String, Dict{String, Any}}()
+            for m in methods
+                re[k][m] = Dict{String, Any}()
+                re[k][m]["p_hat"] = Vector{Vector{Float64}}()
+                re[k][m]["rss"]   = Float64[]
+                re[k][m]["err"]   = Vector{Vector{Float64}}()
+            end
+        end
+
+        u0_norm = u0 ./ scales
+        lb_norm = Value_R.lb ./ scales
+        ub_norm = Value_R.ub ./ scales
+
+        # Baseline: rss of I_data vs true I_true, averaged across iters
+        rss_baseline_list = Float64[]
+
+        for iter in 1:num_of_iters
+            I_data = I_true .+ noise .* I_true .* randn(length(I_true))
+            push!(rss_baseline_list, get_RSS(I_data, I_true))
+
+            for k in k_points
+                t_k = t[1:k]
+                I_k = I_data[1:k]
+
+                for m in methods
+                    blocks_k = get_blocks(I_k, t_k, m)
+
+                    model(x, p_norm) = begin
+                        p_real = p_norm .* scales
+                        residual(p_real, blocks_k..., x)
+                    end
+
+                    fit = curve_fit(model, t_k, I_k, u0_norm; lower=lb_norm, upper=ub_norm)
+                    p_hat = fit.param .* scales
+
+                    # Predict full period I_hat using FULL blocks built from full data
+                    blocks_full = get_blocks(I_data, t, m)
+                    I_hat_full  = residual(p_hat, blocks_full..., t)
+
+                    rss_pred = get_RSS(I_hat_full, I_true)
+                    err_pct  = get_error(p_hat, Value_R.true_vals)
+
+                    push!(re[k][m]["p_hat"], p_hat)
+                    push!(re[k][m]["rss"], rss_pred)
+                    push!(re[k][m]["err"], err_pct)
+                end
+            end
+        end
+
+        rss_baseline_mean = mean(rss_baseline_list)
+        rss_baseline_std  = std(rss_baseline_list)
+
+        println("\n================ Early-Time Data Truncation ================")
+        println("Noise level: $noise")
+        println("Baseline RSS (I_data vs I_true): mean=$(rss_baseline_mean), std=$(rss_baseline_std)")
+        println("------------------------------------------------------------")
+
+        for k in k_points
+            println("\n>>> k = $k")
+
+            for m in methods
+                label = (m == "T" ? "Trap (T)" : "Simpson (S)")
+
+                p_samples = re[k][m]["p_hat"]::Vector{Vector{Float64}}
+                rss_list  = re[k][m]["rss"]::Vector{Float64}
+                err_list  = re[k][m]["err"]::Vector{Vector{Float64}}
+
+                P = hcat(p_samples...)   # 5 x num_iters
+                E = hcat(err_list...)    # 5 x num_iters
+
+                p_mean   = vec(mean(P; dims=2))
+                p_std    = vec(std(P;  dims=2))
+                err_mean = vec(mean(E; dims=2))
+                err_std  = vec(std(E;  dims=2))
+
+                rss_mean = mean(rss_list)
+                rss_std  = std(rss_list)
+
+                println("  Method: $label")
+                println("  RSS (sum((I_hat .- I_data).^2)): mean=$(rss_mean), std=$(rss_std)")
+                println("  RSS ratio to baseline (mean): $(rss_mean / rss_baseline_mean)")
+
+                for i in 1:5
+                    println("    $(params[i]): mean=$(p_mean[i]) std=$(p_std[i]) | err% mean=$(err_mean[i]) std=$(err_std[i])")
+                end
+            end
+        end
+
+        println("\n============================================================\n")
+        return re
     end
 
     function get_error(est::Vector, true_value::Vector=Value_R.true_vals)::Vector
@@ -348,7 +466,7 @@ module Logic_R
         return sum((est .- true_value).^2)
     end
 
-    function print_results(results::NamedTuple)
+    function print_results(results::NamedTuple; t=collect(1.0:10.0:1000.0))
         true_list = results.true_params
         estimated_list = results.estimated
         initial_list = results.initial_guesses
@@ -357,9 +475,15 @@ module Logic_R
         cost = sum((true_list .- estimated_list).^2)
         iteration = length(results.α_trace)
 
+        rss = nothing
+        if results.I !== nothing
+            I_hat = residual(estimated_list, results.blocks..., t)
+            rss = get_RSS(I_hat, results.I) # RSS (sum((I_hat .- I_data).^2))
+        end
+
         println("=" ^ 82)
         println("Estimation Results")
-        println("Total cost: $cost | iteration steps: $iteration")
+        println("Total cost: $cost | iteration steps: $iteration | RSS (sum((I_hat .- I_data).^2)): $rss")
         println("=" ^ 82)
 
         param_labels = String["α", "σ", "γ", "S0", "E0"]
@@ -411,7 +535,53 @@ module Logic_R
         return sum((I_data .- I).^2)
     end
 
-    function project_to_bounds(result::Vector{Float64}, lb::Vector{Float64}, ub::Vector{Float64})::Vector{Float64}
+    function swap_project_SE0_for_sigma_gamma!(x::Vector{Float64}, I0::Float64)
+        α, σ, γ, S0, E0 = x
+        r = σ / γ
+
+        σ_new = γ
+        γ_new = σ
+
+        # preserve σ(E0+I0)
+        E0_new = r * (E0 + I0) - I0
+
+        # preserve σ(S0+E0+I0)
+        S0_new = r * S0
+
+        x[2] = σ_new
+        x[3] = γ_new
+        x[4] = S0_new
+        x[5] = E0_new
+        return x
+    end
+
+    function project_S0E0_euclidean!(x::Vector{Float64}, lb::Vector{Float64}, ub::Vector{Float64})
+        s0 = x[4]
+        e0 = x[5]
+
+        if s0 + e0 <= 1.0
+            x[4] = s0
+            x[5] = e0
+            return x
+        end
+
+        # Feasible s must satisfy:
+        #   lbS <= s <= ubS
+        #   lbE <= 1-s <= ubE  =>  1-ubE <= s <= 1-lbE
+        s_min = max(lb[4], 1.0 - ub[5])
+        s_max = min(ub[4], 1.0 - lb[5])
+
+        # Euclidean projection (smallest adjustment in L2)
+        s_star = 0.5 * (s0 + 1.0 - e0)
+        s_proj = clamp(s_star, s_min, s_max)
+        e_proj = 1.0 - s_proj
+
+        x[4] = s_proj
+        x[5] = e_proj
+        return x
+    end
+
+    function project_to_bounds(result::Vector{Float64}, lb::Vector{Float64}, ub::Vector{Float64}, I0::Float64)::Vector{Float64}
         """
         Here bounds we are applying is
         all(lb_scaled .<= res .<= ub_scaled) && (res[2] > res[3]) && (res[4] + res[5] <= 1)
@@ -419,9 +589,10 @@ module Logic_R
         x = clamp.(result, lb, ub)
 
         if x[2] < x[3]
-            # since non-identifiability we switch gamma and sigma
-            x[2], x[3] = x[3], x[2]
+            swap_project_SE0_for_sigma_gamma!(x, I0)
         end
+
+        x = clamp.(x, lb, ub)
 
         if lb[4] + lb[5] > 1
             @warn "Infeasible bounds: lb[4] + lb[5] > 1, cannot satisfy S0 + E0 <= 1"
@@ -429,18 +600,310 @@ module Logic_R
         end
 
         if x[4] + x[5] > 1
-            # Reduce res[5], but make sure it is above the lower bound
-            x[5] = max(1 - x[4], lb[5])
-
-            if x[4] + x[5] > 1
-                # If after lowering res[5] we are still out of bounds, lets reduce res[4]
-                x[4] = max(1 - x[5], lb[4])
-            end
+            project_S0E0_euclidean!(x, lb, ub)
         end
 
         x = clamp.(x, lb, ub)
 
         return x
+    end
+
+    function noise_level_analysis(I, t, noise_levels, x_noise_percent, x0, method; num_of_iters=20)
+        params = String["alpha", "sigma", "gamma", "S0", "E0"]
+        results = Dict{String, Dict{String, Vector{Float64}}}()
+        for p in params
+            results[p] = Dict("mean" => Float64[], "std" => Float64[])
+        end
+
+        for noise in noise_levels
+            param_samples = Dict{String, Vector{Float64}}()
+            for p in params
+                param_samples[p] = Float64[]
+            end
+
+            for _ in 1:num_of_iters
+                I_data = I .+ noise .* I .* randn(length(I))
+                res = run_experiments(x0, I_data, t, method).estimated
+
+                push!(param_samples["alpha"], res[1])
+                push!(param_samples["sigma"], res[2])
+                push!(param_samples["gamma"], res[3])
+                push!(param_samples["S0"],    res[4])
+                push!(param_samples["E0"],    res[5])
+            end
+
+            for p in keys(results)
+                push!(results[p]["mean"], mean(param_samples[p]))
+                push!(results[p]["std"],  std(param_samples[p]))
+            end
+        end
+
+        # Plot 5 subplots
+        true_values = Value_R.true_vals
+        plt_list = Plots.Plot[]
+        for (i, p) in enumerate(params)
+            means = results[p]["mean"]
+            stds  = results[p]["std"]
+
+            lower = means .- stds
+            upper = means .+ stds
+
+            pl = plot(x_noise_percent, means;
+                      label="Estimated $p",
+                      marker=:circle,
+                      markersize=3,
+                      xlabel="Noise Level (% of max I)",
+                      ylabel="Parameter Value",
+                      title="Robustness of $p",
+                      gridalpha=0.3)
+
+            plot!(pl, x_noise_percent, lower; label="Mean ± Std", fillrange=upper, fillalpha=0.2, linealpha=0.0)
+
+            hline!(pl, [true_values[i]]; label="True $p", linestyle=:dash, linewidth=2)
+
+            push!(plt_list, pl)
+        end
+
+        final_plot = plot(plt_list...; layout=(1, 5), size=(1600, 350), background_color=:white)
+        savefig(final_plot, "noise_level_analysis.pdf")
+    end
+
+    function num_of_datapoints_analysis(num_of_datapoints::Vector{Int}, noise, x0, method; num_of_iters=20)
+        params = String["alpha", "sigma", "gamma", "S0", "E0"]
+        results = Dict{String, Dict{String, Vector{Float64}}}()
+        for p in params
+            results[p] = Dict("mean" => Float64[], "std" => Float64[])
+        end
+
+        for ns in num_of_datapoints
+            t = collect(range(0.0, 1000.0, length=ns))
+            S, E, I, R = simulate_seir(t)
+            param_samples = Dict{String, Vector{Float64}}()
+            for p in params
+                param_samples[p] = Float64[]
+            end
+
+            for _ in 1:num_of_iters
+                I_data = I .+ noise .* I .* randn(length(I))
+                res = run_experiments(x0, I_data, t, method).estimated
+
+                push!(param_samples["alpha"], res[1])
+                push!(param_samples["sigma"], res[2])
+                push!(param_samples["gamma"], res[3])
+                push!(param_samples["S0"],    res[4])
+                push!(param_samples["E0"],    res[5])
+            end
+
+            for p in keys(results)
+                push!(results[p]["mean"], mean(param_samples[p]))
+                push!(results[p]["std"],  std(param_samples[p]))
+            end
+        end
+
+        # Plot 5 subplots
+        true_values = Value_R.true_vals
+        plt_list = Plots.Plot[]
+        for (i, p) in enumerate(params)
+            means = results[p]["mean"]
+            stds  = results[p]["std"]
+
+            lower = means .- stds
+            upper = means .+ stds
+
+            pl = plot(num_of_datapoints, means;
+                      label="Estimated $p",
+                      marker=:circle,
+                      markersize=3,
+                      xlabel="Number of Data Points",
+                      ylabel="Parameter Value",
+                      title="Robustness of $p",
+                      gridalpha=0.3)
+
+            plot!(pl, num_of_datapoints, lower; label="Mean ± Std", fillrange=upper, fillalpha=0.2, linealpha=0.0)
+
+            hline!(pl, [true_values[i]]; label="True $p", linestyle=:dash, linewidth=2)
+
+            push!(plt_list, pl)
+        end
+
+        final_plot = plot(plt_list...; layout=(1, 5), size=(1600, 350), background_color=:white)
+        savefig(final_plot, "num_of_datapoints_analysis.pdf")
+    end
+
+    function noise_level_analysis(I, t, noise_levels, x_noise_percent, x0; num_of_iters=20)
+        params  = String["alpha", "sigma", "gamma", "S0", "E0"]
+        methods = String["T", "S"]   # row1: T row2: S
+
+        # results[method][param]["mean"/"std"] -> Vector over noise_levels
+        results = Dict{String, Dict{String, Dict{String, Vector{Float64}}}}()
+        for m in methods
+            results[m] = Dict{String, Dict{String, Vector{Float64}}}()
+            for p in params
+                results[m][p] = Dict("mean" => Float64[], "std" => Float64[])
+            end
+        end
+
+        for noise in noise_levels
+            for m in methods
+                param_samples = Dict(p => Float64[] for p in params)
+
+                for _ in 1:num_of_iters
+                    I_data = I .+ noise .* I .* randn(length(I))
+                    res = run_experiments(x0, I_data, t, m).estimated
+
+                    push!(param_samples["alpha"], res[1])
+                    push!(param_samples["sigma"], res[2])
+                    push!(param_samples["gamma"], res[3])
+                    push!(param_samples["S0"],    res[4])
+                    push!(param_samples["E0"],    res[5])
+                end
+
+                for p in params
+                    push!(results[m][p]["mean"], mean(param_samples[p]))
+                    push!(results[m][p]["std"],  std(param_samples[p]))
+                end
+            end
+        end
+
+        true_values = Value_R.true_vals
+
+        # Compute ylims per parameter across BOTH methods (using mean ± std plus true)
+        ylims_by_param = Dict{String, Tuple{Float64, Float64}}()
+        for (i, p) in enumerate(params)
+            vals = Float64[]
+            for m in methods
+                means = results[m][p]["mean"]
+                stds  = results[m][p]["std"]
+                append!(vals, means .- stds)
+                append!(vals, means .+ stds)
+            end
+            push!(vals, true_values[i])
+
+            ymin, ymax = minimum(vals), maximum(vals)
+            pad = 0.05 * (ymax - ymin + eps())
+            ylims_by_param[p] = (ymin - pad, ymax + pad)
+        end
+
+        # Build 2x5 plots
+        plt_list = Plots.Plot[]
+        for (row, m) in enumerate(methods)
+            for (i, p) in enumerate(params)
+                means = results[m][p]["mean"]
+                stds  = results[m][p]["std"]
+                lower = means .- stds
+                upper = means .+ stds
+
+                method_label = (m == "T" ? "Trap (T)" : "Simpson (S)")
+
+                pl = plot(
+                    x_noise_percent, means;
+                    label="Estimated $p",
+                    marker=:circle,
+                    markersize=3,
+                    xlabel=(row == 2 ? "Noise Level (% of max I)" : ""),  # only bottom row shows x label
+                    ylabel="Parameter Value",
+                    title="$p • $method_label",
+                    gridalpha=0.3,
+                    ylims=ylims_by_param[p],
+                )
+
+                plot!(pl, x_noise_percent, lower; label="Mean ± Std", fillrange=upper, fillalpha=0.2, linealpha=0.0)
+                hline!(pl, [true_values[i]]; label="True $p", linestyle=:dash, linewidth=2)
+
+                push!(plt_list, pl)
+            end
+        end
+
+        final_plot = plot(plt_list...; layout=(2, 5), size=(1600, 650), background_color=:white)
+        savefig(final_plot, "noise_level_analysis.pdf")
+    end
+
+    function num_of_datapoints_analysis(num_of_datapoints::Vector{Int}, noise, x0; num_of_iters=20)
+        params  = String["alpha", "sigma", "gamma", "S0", "E0"]
+        methods = String["T", "S"]
+
+        results = Dict{String, Dict{String, Dict{String, Vector{Float64}}}}()
+        for m in methods
+            results[m] = Dict{String, Dict{String, Vector{Float64}}}()
+            for p in params
+                results[m][p] = Dict("mean" => Float64[], "std" => Float64[])
+            end
+        end
+
+        for ns in num_of_datapoints
+            t = collect(range(0.0, 1000.0, length=ns))
+            S, E, I, R = simulate_seir(t)
+
+            for m in methods
+                param_samples = Dict(p => Float64[] for p in params)
+
+                for _ in 1:num_of_iters
+                    I_data = I .+ noise .* I .* randn(length(I))
+                    res = run_experiments(x0, I_data, t, m).estimated
+
+                    push!(param_samples["alpha"], res[1])
+                    push!(param_samples["sigma"], res[2])
+                    push!(param_samples["gamma"], res[3])
+                    push!(param_samples["S0"],    res[4])
+                    push!(param_samples["E0"],    res[5])
+                end
+
+                for p in params
+                    push!(results[m][p]["mean"], mean(param_samples[p]))
+                    push!(results[m][p]["std"],  std(param_samples[p]))
+                end
+            end
+        end
+
+        true_values = Value_R.true_vals
+
+        ylims_by_param = Dict{String, Tuple{Float64, Float64}}()
+        for (i, p) in enumerate(params)
+            vals = Float64[]
+            for m in methods
+                means = results[m][p]["mean"]
+                stds  = results[m][p]["std"]
+                append!(vals, means .- stds)
+                append!(vals, means .+ stds)
+            end
+            push!(vals, true_values[i])
+
+            ymin, ymax = minimum(vals), maximum(vals)
+            pad = 0.05 * (ymax - ymin + eps())
+            ylims_by_param[p] = (ymin - pad, ymax + pad)
+        end
+
+        plt_list = Plots.Plot[]
+        for (row, m) in enumerate(methods)
+            for (i, p) in enumerate(params)
+                means = results[m][p]["mean"]
+                stds  = results[m][p]["std"]
+                lower = means .- stds
+                upper = means .+ stds
+
+                method_label = (m == "T" ? "Trap (T)" : "Simpson (S)")
+
+                pl = plot(
+                    num_of_datapoints, means;
+                    label="Estimated $p",
+                    marker=:circle,
+                    markersize=3,
+                    xlabel=(row == 2 ? "Number of Data Points" : ""),
+                    ylabel="Parameter Value",
+                    title="$p • $method_label",
+                    gridalpha=0.3,
+                    ylims=ylims_by_param[p],
+                )
+
+                plot!(pl, num_of_datapoints, lower; label="Mean ± Std", fillrange=upper, fillalpha=0.2, linealpha=0.0)
+                hline!(pl, [true_values[i]]; label="True $p", linestyle=:dash, linewidth=2)
+
+                push!(plt_list, pl)
+            end
+        end
+
+        final_plot = plot(plt_list...; layout=(2, 5), size=(1600, 650), background_color=:white)
+        savefig(final_plot, "num_of_datapoints_analysis.pdf")
     end
 
 end
