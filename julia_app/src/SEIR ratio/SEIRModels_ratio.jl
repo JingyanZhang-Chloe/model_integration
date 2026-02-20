@@ -586,7 +586,7 @@ module Logic_R
         Here bounds we are applying is
         all(lb_scaled .<= res .<= ub_scaled) && (res[2] > res[3]) && (res[4] + res[5] <= 1)
         """
-        x = clamp.(result, lb, ub)
+        x = copy(result)
 
         if x[2] < x[3]
             swap_project_SE0_for_sigma_gamma!(x, I0)
