@@ -25,7 +25,7 @@ module Value_R
     const scales = [0.01, 0.01, 0.01, 1.0, 1.0]
 
     const lb = [0.0, 0.0, 0.0, 0.8, 0.0] # Forcing S0 to be greater than 0.8
-    const ub = [Inf, Inf, Inf, 1.0, 1.0]
+    const ub = [Inf, Inf, Inf, 1.0, 0.2]
 
     const T = 100.0
 end
