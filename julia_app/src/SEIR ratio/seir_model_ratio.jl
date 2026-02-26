@@ -36,7 +36,7 @@ function main()
     # Baseline initial guess
     u0_baseline = [0.3, 0.03, 0.003, 0.8, 0.02]
 
-    # Logic_R.run_experiments_k_points(u0_baseline, k_points, noise, I, t)
+    Logic_R.run_experiments_k_points(u0_baseline, k_points, noise, I, t)
 
     #=
     println("\n----------------------------------------")

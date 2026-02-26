@@ -15,6 +15,11 @@ module Value_R
     const I0 = 0.01
     const R0 = 0.0
 
+    #=
+    const α = 0.2
+    const σ = 0.01
+    const γ = 0.005
+    =#
     const α = 0.2
     const σ = 0.01
     const γ = 0.005
@@ -39,6 +44,7 @@ module Logic_R
     using LsqFit
     using NumericalIntegration
     using Statistics
+    using HomotopyContinuation
 
     function seir!(du, u, p, t)
         S, E, I, R = u
@@ -405,7 +411,7 @@ module Logic_R
                     blocks_full = get_blocks(I_data, t, m)
                     I_hat_full  = residual(p_hat, blocks_full..., t)
 
-                    rss_pred = get_RSS(I_hat_full, I_true)
+                    rss_pred = get_RSS(I_hat_full, I_data)
                     err_pct  = get_error(p_hat, Value_R.true_vals)
 
                     push!(re[k][m]["p_hat"], p_hat)
@@ -608,6 +614,62 @@ module Logic_R
         return x
     end
 
+    to_physical(res_scaled, T::Float64) = [res_scaled[1] / T, res_scaled[2] / T, res_scaled[3] / T, res_scaled[4], res_scaled[5]]
+    to_scaled(res, T::Float64) = [res[1] * T, res[2] * T, res[3] * T, res[4], res[5]]
+
+    function HC_LS(t_scaled::Vector, T::Float64, I::Vector, I_data::Vector, vars::Vector, method::String; if_print=false)
+        B = Logic_R.get_blocks(I_data, t_scaled, method)
+
+        function model(x, p)
+            return Logic_R.residual(p, B..., x)
+        end
+
+        I_hat = Logic_R.residual(vars, B..., t_scaled)
+        J = sum((I_hat .- I_data).^2)
+        system_eqs = differentiate(J, vars)
+        C = System(system_eqs, variables=vars)
+        result = HomotopyContinuation.solve(C, show_progress=false)
+        real_results_scaled = Vector{Float64}[]
+
+        for sol in solutions(result)
+            push!(real_results_scaled, real.(sol))
+        end
+
+        lb_scaled = [Value_R.lb[1]*T, Value_R.lb[2]*T, Value_R.lb[3]*T, Value_R.lb[4], Value_R.lb[5]]
+        ub_scaled = [Inf, Inf, Inf, Value_R.ub[4], Value_R.ub[5]]
+
+        filtered_results_scaled = Vector{Float64}[]
+        after_projection_results_scaled = Vector{Float64}[]
+
+        for r in real_results_scaled
+            bound_result = Logic_R.project_to_bounds(r, lb_scaled, ub_scaled, B[1])
+            fit = curve_fit(model, t_scaled, I_data, bound_result, lower=lb_scaled, upper=ub_scaled)
+            push!(filtered_results_scaled, fit.param)
+            push!(after_projection_results_scaled, bound_result)
+        end
+
+        best_result_scaled, RSS_Ihat_Idata = Logic_R.best_solution(filtered_results_scaled, I_data, B..., t_scaled)
+        best_result = to_physical(best_result_scaled, T)
+        parameter_err = Logic_R.get_error(best_result)
+        RSS_Idata_I = Logic_R.RSS_I_data(I_data, I)
+
+        if if_print
+            println("  Method: $method")
+            println("  Variables: $best_result")
+            println("  Parameter err (abs.(est .- true_value) ./ true_value .* 100) $parameter_err")
+            println("  RSS (sum((I_hat .- I_data).^2)): $RSS_Ihat_Idata")
+            println("  RSS (sum((I_data .- I).^2)): $RSS_Idata_I")
+        end
+
+        return (
+            method = method,
+            best_result = best_result,
+            parameter_err = parameter_err,
+            RSS_Ihat_Idata = RSS_Ihat_Idata,
+            RSS_Idata_I = RSS_Idata_I
+        )
+    end
+
     function noise_level_analysis(I, t, noise_levels, x_noise_percent, x0, method; num_of_iters=20)
         params = String["alpha", "sigma", "gamma", "S0", "E0"]
         results = Dict{String, Dict{String, Vector{Float64}}}()
@@ -652,7 +714,7 @@ module Logic_R
                       label="Estimated $p",
                       marker=:circle,
                       markersize=3,
-                      xlabel="Noise Level (% of max I)",
+                      xlabel="Noise Level (% of I)",
                       ylabel="Parameter Value",
                       title="Robustness of $p",
                       gridalpha=0.3)
@@ -800,7 +862,7 @@ module Logic_R
                     label="Estimated $p",
                     marker=:circle,
                     markersize=3,
-                    xlabel=(row == 2 ? "Noise Level (% of max I)" : ""),  # only bottom row shows x label
+                    xlabel=(row == 2 ? "Noise Level (% of I)" : ""),  # only bottom row shows x label
                     ylabel="Parameter Value",
                     title="$p • $method_label",
                     gridalpha=0.3,
@@ -904,6 +966,309 @@ module Logic_R
 
         final_plot = plot(plt_list...; layout=(2, 5), size=(1600, 650), background_color=:white)
         savefig(final_plot, "num_of_datapoints_analysis.pdf")
+    end
+
+    function noise_level_analysis_HC_LS(I, t_scaled, T, vars, noise_levels, x_noise_percent; num_of_iters=5)
+        params  = String["alpha", "sigma", "gamma", "S0", "E0"]
+        methods = String["T", "S"]   # row1: T row2: S
+
+        # results[method][param]["mean"/"std"] -> Vector over noise_levels
+        results = Dict{String, Dict{String, Dict{String, Vector{Float64}}}}()
+        for m in methods
+            results[m] = Dict{String, Dict{String, Vector{Float64}}}()
+            for p in params
+                results[m][p] = Dict("mean" => Float64[], "std" => Float64[])
+            end
+        end
+
+        for noise in noise_levels
+            for m in methods
+                param_samples = Dict(p => Float64[] for p in params)
+
+                for _ in 1:num_of_iters
+                    I_data = I .+ noise .* I .* randn(length(I))
+                    res = HC_LS(t_scaled, T, I, I_data, vars, m).best_result
+
+                    push!(param_samples["alpha"], res[1])
+                    push!(param_samples["sigma"], res[2])
+                    push!(param_samples["gamma"], res[3])
+                    push!(param_samples["S0"],    res[4])
+                    push!(param_samples["E0"],    res[5])
+                end
+
+                for p in params
+                    push!(results[m][p]["mean"], mean(param_samples[p]))
+                    push!(results[m][p]["std"],  std(param_samples[p]))
+                end
+            end
+        end
+
+        true_values = Value_R.true_vals
+
+        # Compute ylims per parameter across BOTH methods (using mean ± std plus true)
+        ylims_by_param = Dict{String, Tuple{Float64, Float64}}()
+        for (i, p) in enumerate(params)
+            vals = Float64[]
+            for m in methods
+                means = results[m][p]["mean"]
+                stds  = results[m][p]["std"]
+                append!(vals, means .- stds)
+                append!(vals, means .+ stds)
+            end
+            push!(vals, true_values[i])
+
+            ymin, ymax = minimum(vals), maximum(vals)
+            pad = 0.05 * (ymax - ymin + eps())
+            ylims_by_param[p] = (ymin - pad, ymax + pad)
+        end
+
+        # Build 2x5 plots
+        plt_list = Plots.Plot[]
+        for (row, m) in enumerate(methods)
+            for (i, p) in enumerate(params)
+                means = results[m][p]["mean"]
+                stds  = results[m][p]["std"]
+                lower = means .- stds
+                upper = means .+ stds
+
+                method_label = (m == "T" ? "Trap (T)" : "Simpson (S)")
+
+                pl = plot(
+                    x_noise_percent, means;
+                    label="Estimated $p",
+                    marker=:circle,
+                    markersize=3,
+                    xlabel=(row == 2 ? "Noise Level (% of I)" : ""),  # only bottom row shows x label
+                    ylabel="Parameter Value",
+                    title="$p • $method_label",
+                    gridalpha=0.3,
+                    ylims=ylims_by_param[p],
+                )
+
+                plot!(pl, x_noise_percent, lower; label="Mean ± Std", fillrange=upper, fillalpha=0.2, linealpha=0.0)
+                hline!(pl, [true_values[i]]; label="True $p", linestyle=:dash, linewidth=2)
+
+                push!(plt_list, pl)
+            end
+        end
+
+        final_plot = plot(plt_list...; layout=(2, 5), size=(1600, 650), background_color=:white)
+        savefig(final_plot, "noise_level_analysis.pdf")
+    end
+
+    function simulate_seir_HC_LS(t_scaled, T::Float64; u0=Value_R.u, p=Value_R.p_true, plot=false)
+        p = p .* T
+        prob = ODEProblem(Logic_R.seir!, u0, (t_scaled[1], t_scaled[end]), p)
+        sol = DifferentialEquations.solve(prob, saveat=t_scaled)
+        sol_arr = Array(sol)
+        S = sol_arr[1, :]
+        E = sol_arr[2, :]
+        I = sol_arr[3, :]
+        R = sol_arr[4, :]
+
+        if plot
+            data_to_plot = hcat(S, E, I, R)
+            println("Plotting data of size: ", size(data_to_plot))
+            plt = Plots.plot(t_scaled, data_to_plot,
+            title = "SEIR Model Results",
+            label = ["True S" "True E" "True I" "True R"],
+            xlabel = "Time",
+            ylabel = "Value",
+            lw = 2
+            )
+            display(plt)
+        end
+
+        return S, E, I, R
+    end
+
+    function num_of_datapoints_analysis_HC_LS(num_of_datapoints::Vector{Int}, noise, T, vars; num_of_iters=20)
+        params  = String["alpha", "sigma", "gamma", "S0", "E0"]
+        methods = String["T", "S"]
+
+        results = Dict{String, Dict{String, Dict{String, Vector{Float64}}}}()
+        for m in methods
+            results[m] = Dict{String, Dict{String, Vector{Float64}}}()
+            for p in params
+                results[m][p] = Dict("mean" => Float64[], "std" => Float64[])
+            end
+        end
+
+        for ns in num_of_datapoints
+            t = collect(range(0.0, 1000.0, length=ns))
+            t_scaled = t ./ T
+            S, E, I, R = simulate_seir_HC_LS(t_scaled)
+
+            for m in methods
+                param_samples = Dict(p => Float64[] for p in params)
+
+                for _ in 1:num_of_iters
+                    I_data = I .+ noise .* I .* randn(length(I))
+                    res = HC_LS(t_scaled, T, I, I_data, vars, m).best_result
+
+                    push!(param_samples["alpha"], res[1])
+                    push!(param_samples["sigma"], res[2])
+                    push!(param_samples["gamma"], res[3])
+                    push!(param_samples["S0"],    res[4])
+                    push!(param_samples["E0"],    res[5])
+                end
+
+                for p in params
+                    push!(results[m][p]["mean"], mean(param_samples[p]))
+                    push!(results[m][p]["std"],  std(param_samples[p]))
+                end
+            end
+        end
+
+        true_values = Value_R.true_vals
+
+        ylims_by_param = Dict{String, Tuple{Float64, Float64}}()
+        for (i, p) in enumerate(params)
+            vals = Float64[]
+            for m in methods
+                means = results[m][p]["mean"]
+                stds  = results[m][p]["std"]
+                append!(vals, means .- stds)
+                append!(vals, means .+ stds)
+            end
+            push!(vals, true_values[i])
+
+            ymin, ymax = minimum(vals), maximum(vals)
+            pad = 0.05 * (ymax - ymin + eps())
+            ylims_by_param[p] = (ymin - pad, ymax + pad)
+        end
+
+        plt_list = Plots.Plot[]
+        for (row, m) in enumerate(methods)
+            for (i, p) in enumerate(params)
+                means = results[m][p]["mean"]
+                stds  = results[m][p]["std"]
+                lower = means .- stds
+                upper = means .+ stds
+
+                method_label = (m == "T" ? "Trap (T)" : "Simpson (S)")
+
+                pl = plot(
+                    num_of_datapoints, means;
+                    label="Estimated $p",
+                    marker=:circle,
+                    markersize=3,
+                    xlabel=(row == 2 ? "Number of Data Points" : ""),
+                    ylabel="Parameter Value",
+                    title="$p • $method_label",
+                    gridalpha=0.3,
+                    ylims=ylims_by_param[p],
+                )
+
+                plot!(pl, num_of_datapoints, lower; label="Mean ± Std", fillrange=upper, fillalpha=0.2, linealpha=0.0)
+                hline!(pl, [true_values[i]]; label="True $p", linestyle=:dash, linewidth=2)
+
+                push!(plt_list, pl)
+            end
+        end
+
+        final_plot = plot(plt_list...; layout=(2, 5), size=(1600, 650), background_color=:white)
+        savefig(final_plot, "num_of_datapoints_analysis.pdf")
+    end
+
+    function run_experiments_k_points_HC_LS(
+        k_points::Vector{Int},
+        noise::Float64,
+        I_true::Vector{Float64},
+        t_scaled::Vector{Float64},
+        T::Float64,
+        vars::Vector;
+        num_of_iters::Int = 20
+    )
+        params  = String["alpha", "sigma", "gamma", "S0", "E0"]
+        methods = ["T", "S"]
+
+        # Store samples: re[k][method]["p_hat"] = Vector{Vector{Float64}}
+        #                re[k][method]["rss"]   = Vector{Float64}
+        #                re[k][method]["err"]   = Vector{Vector{Float64}}
+        # Notice that we store results from every iteration
+        re = Dict{Int, Dict{String, Dict{String, Any}}}()
+        for k in k_points
+            re[k] = Dict{String, Dict{String, Any}}()
+            for m in methods
+                re[k][m] = Dict{String, Any}()
+                re[k][m]["p_hat"] = Vector{Vector{Float64}}()
+                re[k][m]["rss"]   = Float64[]
+                re[k][m]["err"]   = Vector{Vector{Float64}}()
+            end
+        end
+
+        # Baseline: rss of I_data vs true I_true, averaged across iters
+        rss_baseline_list = Float64[]
+
+        for iter in 1:num_of_iters
+            I_data = I_true .+ noise .* I_true .* randn(length(I_true))
+            push!(rss_baseline_list, get_RSS(I_data, I_true))
+
+            for k in k_points
+                t_k = t_scaled[1:k]
+                I_k = I_data[1:k]
+
+                for m in methods
+                    res = HC_LS(t_k, T, I_true[1:k], I_k, vars, m)
+                    p_hat = res.best_result
+                    p_hat_scaled = to_scaled(p_hat, T)
+
+                    # Predict full period I_hat using FULL blocks built from full data
+                    blocks_full = get_blocks(I_data, t_scaled, m)
+                    I_hat_full  = residual(p_hat_scaled, blocks_full..., t_scaled)
+
+                    rss_pred = get_RSS(I_hat_full, I_data)
+                    err_pct  = get_error(p_hat, Value_R.true_vals)
+
+                    push!(re[k][m]["p_hat"], p_hat)
+                    push!(re[k][m]["rss"], rss_pred)
+                    push!(re[k][m]["err"], err_pct)
+                end
+            end
+        end
+
+        rss_baseline_mean = mean(rss_baseline_list)
+        rss_baseline_std  = std(rss_baseline_list)
+
+        println("\n================ Early-Time Data Truncation ================")
+        println("Noise level: $noise")
+        println("Baseline RSS (I_data vs I_true): mean=$(rss_baseline_mean), std=$(rss_baseline_std)")
+        println("------------------------------------------------------------")
+
+        for k in k_points
+            println("\n>>> k = $k")
+
+            for m in methods
+                label = (m == "T" ? "Trap (T)" : "Simpson (S)")
+
+                p_samples = re[k][m]["p_hat"]::Vector{Vector{Float64}}
+                rss_list  = re[k][m]["rss"]::Vector{Float64}
+                err_list  = re[k][m]["err"]::Vector{Vector{Float64}}
+
+                P = hcat(p_samples...)   # 5 x num_iters
+                E = hcat(err_list...)    # 5 x num_iters
+
+                p_mean   = vec(mean(P; dims=2))
+                p_std    = vec(std(P;  dims=2))
+                err_mean = vec(mean(E; dims=2))
+                err_std  = vec(std(E;  dims=2))
+
+                rss_mean = mean(rss_list)
+                rss_std  = std(rss_list)
+
+                println("  Method: $label")
+                println("  RSS (sum((I_hat .- I_data).^2)): mean=$(rss_mean), std=$(rss_std)")
+                println("  RSS ratio to baseline (mean): $(rss_mean / rss_baseline_mean)")
+
+                for i in 1:5
+                    println("    $(params[i]): mean=$(p_mean[i]) std=$(p_std[i]) | err% mean=$(err_mean[i]) std=$(err_std[i])")
+                end
+            end
+        end
+
+        println("\n============================================================\n")
+        return re
     end
 
 end
