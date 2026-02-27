@@ -651,11 +651,13 @@ function main()
 
     # print_degenerate_summary(t_scaled, T, I, noise, variables, 200)
 
-
-    noise_level_list = [0,0.0001,0.0005,0.001,0.005,0.01,0.05]
+    ##=
+    println("True parameters: ", Value_R.true_vals)
+    noise_level_list = [0,0, 0.001, 0.01, 0.05]
     for noise in noise_level_list
-        HC_LS_parameter_analysis(t_scaled, T, I, noise, variables, 5)
+        HC_LS_parameter_analysis(t_scaled, T, I, noise, variables, 10)
     end
+    ##=#
 
     #=
     noise_steps = 41

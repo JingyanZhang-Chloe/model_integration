@@ -20,8 +20,8 @@ module Value_R
     const σ = 0.01
     const γ = 0.005
     =#
-    const α = 0.2
-    const σ = 0.01
+    const α = 0.15
+    const σ = 0.008
     const γ = 0.005
 
     const p_true = [α, σ, γ]
