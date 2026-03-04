@@ -20,8 +20,8 @@ module Value_R
     const σ = 0.01
     const γ = 0.005
     =#
-    const α = 0.15
-    const σ = 0.008
+    const α = 0.2
+    const σ = 0.01
     const γ = 0.005
 
     const p_true = [α, σ, γ]
@@ -1097,7 +1097,7 @@ module Logic_R
         for ns in num_of_datapoints
             t = collect(range(0.0, 1000.0, length=ns))
             t_scaled = t ./ T
-            S, E, I, R = simulate_seir_HC_LS(t_scaled)
+            S, E, I, R = simulate_seir_HC_LS(t_scaled, T)
 
             for m in methods
                 param_samples = Dict(p => Float64[] for p in params)

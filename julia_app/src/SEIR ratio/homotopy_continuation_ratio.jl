@@ -651,13 +651,16 @@ function main()
 
     # print_degenerate_summary(t_scaled, T, I, noise, variables, 200)
 
-    ##=
-    println("True parameters: ", Value_R.true_vals)
-    noise_level_list = [0,0, 0.001, 0.01, 0.05]
-    for noise in noise_level_list
-        HC_LS_parameter_analysis(t_scaled, T, I, noise, variables, 10)
-    end
-    ##=#
+    # println("Begin??: ")
+    # begin_or_not = readline()
+    #=
+        println("True parameters: ", Value_R.true_vals)
+        noise_level_list = [0,0, 0.001, 0.01, 0.05]
+        for noise in [0.05]
+            HC_LS_parameter_analysis(t_scaled, T, I, noise, variables, 10)
+        end
+    =#
+
 
     #=
     noise_steps = 41
@@ -667,9 +670,14 @@ function main()
     =#
 
     #=
+    num_of_datapoints = [i for i in 10:5:100]
+    Logic_R.num_of_datapoints_analysis_HC_LS(num_of_datapoints, 0.01, T, variables)
+    =#
+
+
     k_points = [10 * i for i in 1:1:10]
     Logic_R.run_experiments_k_points_HC_LS(k_points, noise, I, t_scaled, T, variables)
-    =#
+
 
 
     println()
